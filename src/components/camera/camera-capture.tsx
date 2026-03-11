@@ -80,7 +80,7 @@ export function CameraCapture({ onDetectedTimes }: CameraCaptureProps) {
     if (images.length === 0) return;
 
     setIsProcessing(true);
-    setProgressLabel("Enviando imagens para o Gemini...");
+    setProgressLabel("Processando imagens com IA...");
     setRawResponse("");
 
     try {
@@ -92,8 +92,8 @@ export function CameraCapture({ onDetectedTimes }: CameraCaptureProps) {
 
       setLastResultSummary(
         result.detections.length > 0
-          ? `${result.detections.length} dia(s) com horarios detectados`
-          : "Nenhum horario detectado na imagem.",
+          ? `${result.detections.length} dia(s) com horários detectados`
+          : "Nenhum horário detectado na imagem.",
       );
     } catch (error) {
       const message =
@@ -109,10 +109,10 @@ export function CameraCapture({ onDetectedTimes }: CameraCaptureProps) {
     <section className="space-y-3">
       <div>
         <h3 className="text-base font-semibold text-foreground">
-          Captura do cartao
+          Captura do cartão de ponto
         </h3>
         <p className="text-sm text-muted-foreground">
-          Tire a foto ou carregue imagens do cartao de ponto.
+          Tire a foto ou carregue imagens do cartão de ponto.
         </p>
       </div>
 
@@ -196,7 +196,7 @@ export function CameraCapture({ onDetectedTimes }: CameraCaptureProps) {
               ) : (
                 <ScanSearch className="size-4" />
               )}
-              Processar OCR
+              Processar horas
             </Button>
             <Button
               type="button"
@@ -226,7 +226,7 @@ export function CameraCapture({ onDetectedTimes }: CameraCaptureProps) {
         </p>
       )}
 
-      {rawResponse && (
+      {/* {rawResponse && (
         <Button
           type="button"
           variant="ghost"
@@ -237,7 +237,7 @@ export function CameraCapture({ onDetectedTimes }: CameraCaptureProps) {
           <Bug className="size-3.5" />
           {showDebug ? "Ocultar debug" : "Ver debug"}
         </Button>
-      )}
+      )} */}
 
       {showDebug && rawResponse && (
         <pre className="max-h-48 overflow-auto rounded-lg border border-dashed bg-muted p-3 text-sm whitespace-pre-wrap">

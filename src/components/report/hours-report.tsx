@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { toPng } from "html-to-image";
-import { ArrowLeft, Download, FileText, Pencil, Share2 } from "lucide-react";
+import { ArrowLeft, Download, FileSpreadsheet, FileText, Pencil, Share2 } from "lucide-react";
 import Link from "next/link";
 
 import { Button } from "@/components/ui/button";
@@ -135,6 +135,41 @@ export function HoursReport() {
     }
   }
 
+  function downloadCsv() {
+    const header = "Dia;Entrada 1;Saida 1;Entrada 2;Saida 2;Entrada Extra;Saida Extra;Horas Trabalhadas";
+    const lines = workedDays.map(({ row, summary }) =>
+      [
+        row.dayLabel,
+        row.entry1,
+        row.exit1,
+        row.entry2,
+        row.exit2,
+        row.extraEntry,
+        row.extraExit,
+        summary.hhmm,
+      ].join(";"),
+    );
+
+    const footer = [
+      "",
+      `Total de Horas;${monthlySummary.hhmm}`,
+      `Dias Trabalhados;${workedDays.length}`,
+      `Colaborador;${employeeName}`,
+      `Periodo;${MONTHS[selectedMonth]} de ${selectedYear}`,
+    ];
+
+    const bom = "\uFEFF";
+    const csv = bom + [header, ...lines, ...footer].join("\r\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `relatorio-horas-${MONTHS[selectedMonth].toLowerCase()}-${selectedYear}.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
+  }
+
   if (!submitted) {
     return (
       <form onSubmit={handleSubmit} className="space-y-5">
@@ -230,7 +265,7 @@ export function HoursReport() {
       <div
         ref={reportRef}
         className="overflow-hidden rounded-xl border bg-white shadow-sm"
-        style={{ fontFamily: "Montserrat, sans-serif" }}
+        style={{ fontFamily: "var(--font-sans), sans-serif" }}
       >
         {/* Header */}
         <div
@@ -361,7 +396,7 @@ export function HoursReport() {
             </p>
           </div>
 
-          <div className="mt-6 border-t pt-4" style={{ borderColor: "#e5e5e5" }}>
+          <div className="mt-6 border-t pt-15" style={{ borderColor: "#e5e5e5" }}>
             <div
               className="mx-auto w-48 border-t pt-2 text-center"
               style={{ borderColor: "#1a1a1a" }}
@@ -397,6 +432,16 @@ export function HoursReport() {
         >
           <Download className="size-5" />
           Salvar imagem
+        </Button>
+        <Button
+          size="lg"
+          variant="secondary"
+          className="col-span-2 w-full"
+          onClick={downloadCsv}
+          disabled={workedDays.length === 0}
+        >
+          <FileSpreadsheet className="size-5" />
+          Exportar CSV
         </Button>
       </div>
 

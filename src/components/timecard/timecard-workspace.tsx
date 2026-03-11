@@ -1,8 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { FileText, Trash2 } from "lucide-react";
-import Link from "next/link";
+import { Trash2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { CameraCapture } from "@/components/camera/camera-capture";
@@ -72,21 +71,14 @@ export function TimecardWorkspace() {
       <CameraCapture onDetectedTimes={applyDetectedTimes} />
 
       <div className="flex items-center justify-between">
-        <h2 className="text-lg font-semibold">Horas do mes</h2>
+        <h2 className="text-lg font-semibold">Horas do mês</h2>
         <Button variant="outline" size="sm" onClick={clearHours}>
           <Trash2 className="size-3.5" />
-          Limpar
+          Limpar horas
         </Button>
       </div>
 
       <TimecardGrid rows={rows} monthlySummary={monthlySummary} />
-
-      <Link href="/relatorio" className="block">
-        <Button size="lg" className="w-full bg-unimax-blue text-white hover:bg-unimax-blue/90">
-          <FileText className="size-5" />
-          Emitir relatorio de horas
-        </Button>
-      </Link>
     </div>
   );
 }
