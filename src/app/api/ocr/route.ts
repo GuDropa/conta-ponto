@@ -3,27 +3,48 @@ import { NextRequest, NextResponse } from "next/server";
 
 const SYSTEM_PROMPT = `Você é um sistema de OCR especializado em cartões de ponto mecânicos brasileiros (modelo Evo Ponto Fácil).
 
-O cartão possui uma tabela com dias (1 a 31) e colunas de horários:
+Você recebe EXATAMENTE 2 imagens do MESMO cartão de ponto de UM ÚNICO funcionário:
+- Imagem 1 = FRENTE do cartão
+- Imagem 2 = VERSO do cartão
+
+Sua tarefa é:
+1) Ler o NOME DO COLABORADOR impresso/manuscrito no cartão (campo de identificação do funcionário).
+2) Extrair TODOS os horários carimbados mecanicamente (tinta vermelha, formato HH:MM) em AMBAS as faces e CONSOLIDAR em uma única lista por dia do mês (1 a 31).
+
+Estrutura típica da tabela:
 - Manhã: Entrada, Saída
 - Tarde: Entrada, Saída
 - Extra: Entrada, Saída
 
-Os horários são carimbados mecanicamente em vermelho no formato HH:MM.
+Se o mesmo dia aparecer parcialmente na frente e no verso, una os dados num único registro para aquele dia.
+Use os campos entry1/exit1 para o período da manhã, entry2/exit2 para a tarde (período após o intervalo), e extraEntry/extraExit para horas extras.
 
-Analise a imagem do cartão e extraia TODOS os horários visíveis para cada dia.
-
-REGRAS IMPORTANTES:
-- Retorne SOMENTE um array JSON válido, sem markdown, sem explicações.
-- Cada item: { "day": número, "entry1": "HH:MM", "exit1": "HH:MM", "entry2": "HH:MM", "exit2": "HH:MM", "extraEntry": "HH:MM", "extraExit": "HH:MM" }
+REGRAS DE SAÍDA (obrigatório):
+- Retorne SOMENTE um único objeto JSON válido, sem markdown, sem texto antes ou depois.
+- Formato exato:
+{
+  "employeeName": "nome completo como no cartão ou string vazia se ilegível",
+  "days": [
+    {
+      "day": 1,
+      "entry1": "HH:MM",
+      "exit1": "HH:MM",
+      "entry2": "HH:MM",
+      "exit2": "HH:MM",
+      "extraEntry": "HH:MM",
+      "extraExit": "HH:MM"
+    }
+  ]
+}
 - Use string vazia "" para campos sem carimbo visível.
-- Se não houver nenhum horário visível, retorne [].
-- Inclua APENAS dias que tenham pelo menos um horário carimbado.
-- Os horários devem estar no formato HH:MM (24h).
-- Preste atenção especial aos dígitos dos carimbos mecânicos que podem estar borrados.`;
+- Inclua em "days" APENAS dias que tenham pelo menos um horário carimbado (após consolidar frente e verso).
+- Horários no formato HH:MM (24h).
+- Se não houver nenhum horário legível, use "days": [].
+- Atenção a dígitos borrados nos carimbos mecânicos.`;
 
 const MODEL_FALLBACK_ORDER = [
   "gemini-2.5-flash",
-  "gemini-2.0-flash",
+  "gemini-2.5-pro",
   "gemini-2.5-flash-lite",
 ];
 
@@ -47,6 +68,33 @@ type ParsedRow = {
   extraEntry?: string;
   extraExit?: string;
 };
+
+type ParsedResponse = {
+  employeeName?: string;
+  days?: ParsedRow[];
+};
+
+function extractJsonObject(text: string): ParsedResponse {
+  const start = text.indexOf("{");
+  if (start === -1) {
+    throw new Error("Resposta não contém objeto JSON.");
+  }
+
+  let depth = 0;
+  for (let i = start; i < text.length; i++) {
+    const c = text[i];
+    if (c === "{") depth++;
+    else if (c === "}") {
+      depth--;
+      if (depth === 0) {
+        const slice = text.slice(start, i + 1);
+        return JSON.parse(slice) as ParsedResponse;
+      }
+    }
+  }
+
+  throw new Error("JSON incompleto na resposta.");
+}
 
 async function tryGenerateContent(
   genAI: GoogleGenerativeAI,
@@ -116,6 +164,16 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    if (images.length !== 2) {
+      return NextResponse.json(
+        {
+          error:
+            "Envie exatamente 2 imagens por requisição (frente e verso do mesmo cartão).",
+        },
+        { status: 400 },
+      );
+    }
+
     const genAI = new GoogleGenerativeAI(apiKey);
 
     const imageParts: GeminiImagePart[] = await Promise.all(
@@ -136,8 +194,10 @@ export async function POST(request: NextRequest) {
       imageParts,
     );
 
-    const jsonMatch = responseText.match(/\[[\s\S]*\]/);
-    if (!jsonMatch) {
+    let parsed: ParsedResponse;
+    try {
+      parsed = extractJsonObject(responseText);
+    } catch {
       return NextResponse.json(
         {
           error: "Resposta do modelo não contém JSON válido.",
@@ -148,9 +208,11 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const parsed = JSON.parse(jsonMatch[0]) as ParsedRow[];
+    const days = Array.isArray(parsed.days) ? parsed.days : [];
+    const employeeName =
+      typeof parsed.employeeName === "string" ? parsed.employeeName : "";
 
-    const detections = parsed.map((item) => ({
+    const detections = days.map((item) => ({
       day: item.day,
       values: {
         ...(item.entry1 ? { entry1: item.entry1 } : {}),
@@ -163,6 +225,7 @@ export async function POST(request: NextRequest) {
     }));
 
     return NextResponse.json({
+      employeeName,
       detections,
       raw: responseText,
       modelUsed,
