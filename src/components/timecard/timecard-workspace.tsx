@@ -1,73 +1,20 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import { Camera, Table2, Trash2 } from "lucide-react";
+import { useState } from "react";
+import { Camera, History } from "lucide-react";
 
-import { Button } from "@/components/ui/button";
 import { CameraCapture } from "@/components/camera/camera-capture";
-import { TimecardGrid } from "@/components/timecard/timecard-grid";
-import { TIMECARD_STORAGE_KEY, createDefaultRows } from "@/lib/timecard-defaults";
-import { calculateMonthlySummary } from "@/lib/time-utils";
-import type { DetectedDayTimes } from "@/lib/ocr-timecard-parser";
-import type { TimecardRow } from "@/types/timecard";
+import { CsvHistoryPanel } from "@/components/history/csv-history-panel";
 import { cn } from "@/lib/utils";
 
-type WorkspaceTab = "import" | "month";
+type WorkspaceTab = "import" | "history";
 
 export function TimecardWorkspace() {
   const [tab, setTab] = useState<WorkspaceTab>("import");
-  const [rows, setRows] = useState<TimecardRow[]>(() => {
-    if (typeof window === "undefined") {
-      return createDefaultRows();
-    }
+  const [historyVersion, setHistoryVersion] = useState(0);
 
-    const fromStorage = window.localStorage.getItem(TIMECARD_STORAGE_KEY);
-    if (!fromStorage) {
-      return createDefaultRows();
-    }
-
-    try {
-      const parsed = JSON.parse(fromStorage) as TimecardRow[];
-      return Array.isArray(parsed) && parsed.length > 0
-        ? parsed
-        : createDefaultRows();
-    } catch {
-      return createDefaultRows();
-    }
-  });
-
-  useEffect(() => {
-    if (rows.length > 0) {
-      window.localStorage.setItem(TIMECARD_STORAGE_KEY, JSON.stringify(rows));
-    }
-  }, [rows]);
-
-  const monthlySummary = useMemo(() => calculateMonthlySummary(rows), [rows]);
-
-  function applyDetectedTimes(detectedRows: DetectedDayTimes[]) {
-    if (detectedRows.length === 0) {
-      return;
-    }
-
-    setRows((current) =>
-      current.map((row) => {
-        const day = Number(row.dayLabel);
-        const match = detectedRows.find((item) => item.day === day);
-        if (!match) {
-          return row;
-        }
-
-        return {
-          ...row,
-          ...match.values,
-        };
-      }),
-    );
-  }
-
-  function clearHours() {
-    window.localStorage.removeItem(TIMECARD_STORAGE_KEY);
-    setRows(createDefaultRows());
+  function bumpHistory() {
+    setHistoryVersion((v) => v + 1);
   }
 
   return (
@@ -80,7 +27,9 @@ export function TimecardWorkspace() {
         <button
           type="button"
           role="tab"
+          id="tab-import"
           aria-selected={tab === "import"}
+          aria-controls="panel-import"
           className={cn(
             "flex flex-1 items-center justify-center gap-2 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors",
             tab === "import"
@@ -95,45 +44,43 @@ export function TimecardWorkspace() {
         <button
           type="button"
           role="tab"
-          aria-selected={tab === "month"}
+          id="tab-history"
+          aria-selected={tab === "history"}
+          aria-controls="panel-history"
           className={cn(
             "flex flex-1 items-center justify-center gap-2 rounded-lg px-3 py-2.5 text-sm font-medium transition-colors",
-            tab === "month"
+            tab === "history"
               ? "bg-card text-foreground shadow-sm ring-1 ring-border/60"
               : "text-muted-foreground hover:text-foreground",
           )}
-          onClick={() => setTab("month")}
+          onClick={() => setTab("history")}
         >
-          <Table2 className="size-4 shrink-0 opacity-80" />
-          Quadro do mês
+          <History className="size-4 shrink-0 opacity-80" />
+          Histórico
         </button>
       </div>
 
-      {tab === "import" && (
-        <div className="space-y-2">
-          <CameraCapture onDetectedTimes={applyDetectedTimes} />
-        </div>
-      )}
+      <div
+        id="panel-import"
+        role="tabpanel"
+        aria-labelledby="tab-import"
+        aria-hidden={tab !== "import"}
+        hidden={tab !== "import"}
+        className={cn(tab !== "import" && "hidden")}
+      >
+        <CameraCapture onHistoryUpdated={bumpHistory} />
+      </div>
 
-      {tab === "month" && (
-        <div className="space-y-4">
-          <p className="text-sm text-muted-foreground">
-            Ajuste manual dos horários ou revise o que foi lido de{" "}
-            <strong className="font-medium text-foreground">um único cartão</strong>{" "}
-            (1 par de fotos). Importações com vários funcionários geram apenas o
-            CSV na aba anterior.
-          </p>
-          <div className="flex items-center justify-between gap-2">
-            <h2 className="text-lg font-semibold">Horas do mês</h2>
-            <Button variant="outline" size="sm" onClick={clearHours}>
-              <Trash2 className="size-3.5" />
-              Limpar horas
-            </Button>
-          </div>
-
-          <TimecardGrid rows={rows} monthlySummary={monthlySummary} />
-        </div>
-      )}
+      <div
+        id="panel-history"
+        role="tabpanel"
+        aria-labelledby="tab-history"
+        aria-hidden={tab !== "history"}
+        hidden={tab !== "history"}
+        className={cn(tab !== "history" && "hidden")}
+      >
+        <CsvHistoryPanel historyVersion={historyVersion} />
+      </div>
     </div>
   );
 }

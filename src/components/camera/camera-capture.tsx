@@ -6,7 +6,7 @@ import {
   AlertTriangle,
   Camera,
   CheckCircle2,
-  FileDown,
+  ChevronDown,
   ImageIcon,
   Loader2,
   ScanSearch,
@@ -24,18 +24,31 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import type { DetectedDayTimes } from "@/lib/ocr-timecard-parser";
-import type { HrBatchReport } from "@/lib/hr-batch-report";
+import { CsvDayPicker } from "@/components/csv/csv-day-picker";
+import { appendEntry } from "@/lib/csv-history-storage";
+import {
+  defaultCsvDaySelection,
+  loadCsvIncludedDaysPreference,
+  saveCsvIncludedDaysPreference,
+  selectionToStoredCsvDays,
+} from "@/lib/csv-included-days-prefs";
+import { buildHrBatchReport, includedDaysArrayToSet } from "@/lib/hr-batch-report";
 import {
   chunkFilesIntoPairs,
   downloadHrReportCsv,
   recognizeTimecardBatchWithGemini,
   recognizeTimecardPairWithGemini,
 } from "@/lib/gemini-ocr-client";
+import { useBeforeUnloadWhen } from "@/hooks/use-before-unload-warning";
+import {
+  clearCameraDraft,
+  loadCameraDraft,
+  saveCameraDraft,
+} from "@/lib/camera-draft-idb";
 import { cn } from "@/lib/utils";
 
 type CameraCaptureProps = {
-  onDetectedTimes: (rows: DetectedDayTimes[]) => void;
+  onHistoryUpdated?: () => void;
 };
 
 type SelectedImage = {
@@ -121,19 +134,26 @@ function ThumbnailSlot({
   );
 }
 
-export function CameraCapture({ onDetectedTimes }: CameraCaptureProps) {
+function newDraftImageId(file: File) {
+  const suffix =
+    typeof crypto !== "undefined" && crypto.randomUUID
+      ? crypto.randomUUID()
+      : String(Math.random()).slice(2);
+  return `${file.name}-${file.lastModified}-draft-${suffix}`;
+}
+
+export function CameraCapture({ onHistoryUpdated }: CameraCaptureProps) {
   const cameraInputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const imagesRef = useRef<SelectedImage[]>([]);
+  const draftSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [images, setImages] = useState<SelectedImage[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [progressLabel, setProgressLabel] = useState("");
   const [lastResultSummary, setLastResultSummary] = useState("");
-  const [rawResponse, setRawResponse] = useState("");
-  const [lastBatchReport, setLastBatchReport] = useState<HrBatchReport | null>(
-    null,
-  );
-
+  const [previewsExpanded, setPreviewsExpanded] = useState(false);
+  const [draftRecovered, setDraftRecovered] = useState(false);
+  const [csvDays, setCsvDays] = useState<Set<number>>(defaultCsvDaySelection);
   const { pairs, orphan } = useMemo(
     () => buildPairGroups(images),
     [images],
@@ -153,6 +173,82 @@ export function CameraCapture({ onDetectedTimes }: CameraCaptureProps) {
     };
   }, []);
 
+  useEffect(() => {
+    setCsvDays(loadCsvIncludedDaysPreference());
+  }, []);
+
+  useEffect(() => {
+    if (csvDays.size > 0) {
+      saveCsvIncludedDaysPreference(csvDays);
+    }
+  }, [csvDays]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const files = await loadCameraDraft();
+      if (cancelled || !files?.length) return;
+      setImages((current) => {
+        if (current.length > 0) return current;
+        return files.map((file) => ({
+          id: newDraftImageId(file),
+          file,
+          previewUrl: URL.createObjectURL(file),
+        }));
+      });
+      if (!cancelled) setDraftRecovered(true);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    const files = images.map((img) => img.file);
+    if (files.length === 0) {
+      if (draftSaveTimerRef.current) {
+        clearTimeout(draftSaveTimerRef.current);
+        draftSaveTimerRef.current = null;
+      }
+      void clearCameraDraft();
+      return;
+    }
+    if (draftSaveTimerRef.current) {
+      clearTimeout(draftSaveTimerRef.current);
+    }
+    draftSaveTimerRef.current = setTimeout(() => {
+      draftSaveTimerRef.current = null;
+      void saveCameraDraft(files);
+    }, 400);
+    return () => {
+      if (draftSaveTimerRef.current) {
+        clearTimeout(draftSaveTimerRef.current);
+        draftSaveTimerRef.current = null;
+      }
+    };
+  }, [images]);
+
+  useEffect(() => {
+    function flushDraft() {
+      const list = imagesRef.current.map((i) => i.file);
+      if (list.length > 0) void saveCameraDraft(list);
+    }
+    function onVisibility() {
+      if (document.visibilityState === "hidden") flushDraft();
+    }
+    function onPageHide() {
+      flushDraft();
+    }
+    document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("pagehide", onPageHide);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("pagehide", onPageHide);
+    };
+  }, []);
+
+  useBeforeUnloadWhen(isProcessing || images.length > 0);
+
   function appendFiles(files: FileList | null) {
     if (!files || files.length === 0) return;
     const newImages = Array.from(files).map((file) => ({
@@ -160,7 +256,11 @@ export function CameraCapture({ onDetectedTimes }: CameraCaptureProps) {
       file,
       previewUrl: URL.createObjectURL(file),
     }));
-    setImages((current) => [...current, ...newImages]);
+    setImages((current) => {
+      const next = [...current, ...newImages];
+      void saveCameraDraft(next.map((i) => i.file));
+      return next;
+    });
     if (fileInputRef.current) fileInputRef.current.value = "";
     if (cameraInputRef.current) cameraInputRef.current.value = "";
   }
@@ -170,7 +270,10 @@ export function CameraCapture({ onDetectedTimes }: CameraCaptureProps) {
     setImages((current) => {
       const found = current.find((img) => img.id === imageId);
       if (found) URL.revokeObjectURL(found.previewUrl);
-      return current.filter((img) => img.id !== imageId);
+      const next = current.filter((img) => img.id !== imageId);
+      if (next.length === 0) void clearCameraDraft();
+      else void saveCameraDraft(next.map((i) => i.file));
+      return next;
     });
   }
 
@@ -180,13 +283,13 @@ export function CameraCapture({ onDetectedTimes }: CameraCaptureProps) {
       current.forEach((img) => URL.revokeObjectURL(img.previewUrl));
       return [];
     });
-    setLastBatchReport(null);
     setLastResultSummary("");
+    void clearCameraDraft();
   }
 
   const ctaLabel = useMemo(() => {
     if (completePairs <= 0) return "Processar";
-    if (completePairs === 1) return "Ler 1 cartão e preencher o quadro";
+    if (completePairs === 1) return "Ler 1 cartão e gerar CSV";
     return `Gerar CSV — ${completePairs} funcionários`;
   }, [completePairs]);
 
@@ -207,25 +310,52 @@ export function CameraCapture({ onDetectedTimes }: CameraCaptureProps) {
       : files;
     const filePairs = chunkFilesIntoPairs(filesPaired);
 
+    if (csvDays.size === 0) {
+      setLastResultSummary(
+        "Selecione pelo menos um dia do mês (1–31) para incluir no CSV da conferência.",
+      );
+      return;
+    }
+
+    const onlyDaysForCsv = includedDaysArrayToSet(
+      selectionToStoredCsvDays(csvDays),
+    );
+
     setIsProcessing(true);
     setProgressLabel("Enviando para a IA…");
-    setRawResponse("");
 
     try {
       if (filePairs.length === 1) {
         const [a, b] = filePairs[0];
         const result = await recognizeTimecardPairWithGemini(a, b);
-        setRawResponse(result.raw);
-        onDetectedTimes(result.detections);
-        setLastBatchReport(null);
+
+        const report = buildHrBatchReport(
+          [
+            {
+              pairIndex: 0,
+              employeeName: result.employeeName,
+              detections: result.detections,
+              raw: result.raw,
+            },
+          ],
+          skippedOdd ? 1 : 0,
+        );
+
+        downloadHrReportCsv(
+          report,
+          undefined,
+          onlyDaysForCsv,
+        );
+        appendEntry(report, selectionToStoredCsvDays(csvDays));
+        onHistoryUpdated?.();
 
         const namePart = result.employeeName
           ? `Colaborador: ${result.employeeName}. `
           : "";
         setLastResultSummary(
           result.detections.length > 0
-            ? `${namePart}${result.detections.length} dia(s) com horários detectados. Abra a aba «Quadro do mês» para conferir e editar.`
-            : `${namePart}Nenhum horário detectado nas imagens.`,
+            ? `${namePart}${result.detections.length} dia(s) detectados. CSV baixado e salvo no histórico — aba «Histórico» para baixar de novo.`
+            : `${namePart}Nenhum horário detectado; CSV e histórico foram gerados mesmo assim.`,
         );
         if (skippedOdd) {
           setLastResultSummary(
@@ -236,30 +366,31 @@ export function CameraCapture({ onDetectedTimes }: CameraCaptureProps) {
         return;
       }
 
+      setProgressLabel(
+        `Processando ${filePairs.length} cartão(ões) em paralelo no servidor…`,
+      );
       const batch = await recognizeTimecardBatchWithGemini(filesPaired, {
-        onPairProgress: (done, total) => {
-          setProgressLabel(`Processando cartões (${done}/${total})…`);
-        },
         unpairedImageCount: skippedOdd ? 1 : 0,
       });
 
       const { report } = batch;
-      setLastBatchReport(report);
       const ok = report.employees.filter((e) => !e.error).length;
       const fail = report.employees.filter((e) => e.error).length;
 
-      setRawResponse(
-        report.employees.map((e) => e.raw).filter(Boolean).join("\n---\n"),
+      downloadHrReportCsv(
+        report,
+        undefined,
+        onlyDaysForCsv,
       );
-
-      downloadHrReportCsv(report);
+      appendEntry(report, selectionToStoredCsvDays(csvDays));
+      onHistoryUpdated?.();
 
       let msg = `Relatório pronto: ${ok} cartão(ões) lidos com sucesso`;
       if (fail > 0) {
         msg += `; ${fail} com erro (detalhes na coluna Observação do CSV)`;
       }
       msg +=
-        ". O download do CSV já começou — use o botão abaixo se precisar baixar de novo.";
+        ". O CSV foi baixado e guardado — aba «Histórico» para baixar de novo quando quiser.";
 
       if (report.skippedImageCount > 0) {
         msg += ` Há ${report.skippedImageCount} foto(s) sem par (não foram enviadas).`;
@@ -276,7 +407,8 @@ export function CameraCapture({ onDetectedTimes }: CameraCaptureProps) {
     }
   }
 
-  const canRun = totalPhotos >= 2 && !isProcessing;
+  const canRun =
+    totalPhotos >= 2 && !isProcessing && csvDays.size > 0;
 
   return (
     <section className="space-y-4">
@@ -293,6 +425,33 @@ export function CameraCapture({ onDetectedTimes }: CameraCaptureProps) {
           abaixo antes de processar.
         </p>
       </div>
+
+      {draftRecovered && (
+        <div
+          className="flex items-start gap-2 rounded-xl border border-emerald-500/40 bg-emerald-500/10 p-3 text-sm dark:bg-emerald-500/15"
+          role="status"
+        >
+          <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-emerald-600 dark:text-emerald-400" />
+          <div className="min-w-0 flex-1 space-y-1">
+            <p className="font-medium text-emerald-900 dark:text-emerald-100">
+              Fotos recuperadas neste aparelho
+            </p>
+            <p className="text-xs text-emerald-900/90 dark:text-emerald-100/85">
+              As imagens foram salvas automaticamente (mesmo se a página
+              recarregar no celular). Você pode continuar ou processar de novo.
+            </p>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="h-8 px-2 text-emerald-800 dark:text-emerald-200 border-emerald-500 dark:border-emerald-400"
+              onClick={() => setDraftRecovered(false)}
+            >
+              Entendi
+            </Button>
+          </div>
+        </div>
+      )}
 
       <input
         ref={cameraInputRef}
@@ -335,6 +494,25 @@ export function CameraCapture({ onDetectedTimes }: CameraCaptureProps) {
         </Button>
       </div>
 
+      <div className="rounded-xl border border-border/80 bg-muted/25 p-3">
+        <p className="mb-2 text-sm font-medium text-foreground">
+          Intervalo no CSV (conferência)
+        </p>
+        <p className="mb-3 text-xs text-muted-foreground">
+          Só o exportado respeita o intervalo; a leitura do cartão segue inteira.
+        </p>
+        <CsvDayPicker
+          selected={csvDays}
+          onSelectedChange={setCsvDays}
+          disabled={isProcessing}
+        />
+        {csvDays.size === 0 && (
+          <p className="mt-2 text-xs text-amber-700 dark:text-amber-400">
+            Selecione ao menos um dia para poder processar.
+          </p>
+        )}
+      </div>
+
       {totalPhotos > 0 && (
         <div className="flex flex-wrap items-center gap-2 rounded-xl border border-border/80 bg-muted/35 px-3 py-2.5 text-sm">
           <span className="inline-flex items-center gap-1.5 rounded-md bg-background/80 px-2 py-1 text-xs font-medium ring-1 ring-border/60">
@@ -357,69 +535,147 @@ export function CameraCapture({ onDetectedTimes }: CameraCaptureProps) {
         </div>
       )}
 
-      {pairs.length > 0 && (
-        <div className="max-h-[min(60vh,520px)] space-y-3 overflow-y-auto pr-1">
-          {pairs.map((pair) => {
-            const idxA = pair.index * 2 + 1;
-            const idxB = pair.index * 2 + 2;
-            return (
-              <Card key={`${pair.front.id}-${pair.back.id}`} size="sm">
-                <CardHeader className="pb-2">
-                  <CardTitle className="text-sm">
-                    Cartão {pair.index + 1}
-                  </CardTitle>
-                  <CardDescription>
-                    Foto {idxA} = frente · Foto {idxB} = verso (mesmo
-                    funcionário)
-                  </CardDescription>
-                </CardHeader>
-                <CardContent className="pt-0">
-                  <div className="flex flex-col gap-3 sm:flex-row sm:gap-4">
+      {(pairs.length > 0 || orphan) && (
+        <div className="overflow-hidden rounded-xl border border-border/80 bg-muted/20">
+          <button
+            type="button"
+            id="camera-previews-trigger"
+            aria-expanded={previewsExpanded}
+            aria-controls="camera-previews-panel"
+            onClick={() => setPreviewsExpanded((open) => !open)}
+            className={cn(
+              "flex w-full items-center gap-3 px-3 py-3 text-left transition-colors",
+              "hover:bg-muted/50",
+            )}
+          >
+            <span
+              className={cn(
+                "flex size-9 shrink-0 items-center justify-center rounded-lg bg-primary/15 text-sm font-semibold text-primary",
+              )}
+            >
+              {completePairs}
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="block text-sm font-medium text-foreground">
+                Pré-visualização dos cartões
+              </span>
+              <span className="mt-0.5 block text-xs text-muted-foreground">
+                {completePairs === 0
+                  ? "Nenhum par completo"
+                  : completePairs === 1
+                    ? "1 par adicionado"
+                    : `${completePairs} pares adicionados`}
+                {orphan ? " · 1 foto aguardando verso" : ""}
+                {" · "}
+                {totalPhotos} {totalPhotos === 1 ? "foto" : "fotos"} no total
+              </span>
+            </span>
+            <ChevronDown
+              className={cn(
+                "size-5 shrink-0 text-muted-foreground transition-transform duration-200",
+                previewsExpanded && "rotate-180",
+              )}
+              aria-hidden
+            />
+          </button>
+
+          <div
+            id="camera-previews-panel"
+            role="region"
+            aria-labelledby="camera-previews-trigger"
+            hidden={!previewsExpanded}
+            className={cn(!previewsExpanded && "hidden")}
+          >
+            <div className="space-y-3 border-t border-border/60 p-3">
+              {pairs.length > 0 && (
+                <div className="max-h-[min(60vh,520px)] space-y-3 overflow-y-auto pr-1">
+                  {pairs.map((pair) => {
+                    const idxA = pair.index * 2 + 1;
+                    const idxB = pair.index * 2 + 2;
+                    return (
+                      <Card key={`${pair.front.id}-${pair.back.id}`} size="sm">
+                        <CardHeader className="pb-2">
+                          <CardTitle className="text-sm">
+                            Cartão {pair.index + 1}
+                          </CardTitle>
+                          <CardDescription>
+                            Foto {idxA} = frente · Foto {idxB} = verso (mesmo
+                            funcionário)
+                          </CardDescription>
+                        </CardHeader>
+                        <CardContent className="pt-0">
+                          <div className="flex flex-col gap-3 sm:flex-row sm:gap-4">
+                            <ThumbnailSlot
+                              label="Frente"
+                              globalIndex={idxA}
+                              image={pair.front}
+                              disabled={isProcessing}
+                              onRemove={() => removeImage(pair.front.id)}
+                            />
+                            <ThumbnailSlot
+                              label="Verso"
+                              globalIndex={idxB}
+                              image={pair.back}
+                              disabled={isProcessing}
+                              onRemove={() => removeImage(pair.back.id)}
+                            />
+                          </div>
+                        </CardContent>
+                      </Card>
+                    );
+                  })}
+                </div>
+              )}
+
+              {orphan && (
+                <div
+                  className="rounded-xl border-2 border-dashed border-amber-500/60 bg-amber-500/10 px-3 py-3 dark:bg-amber-500/15"
+                  role="status"
+                >
+                  <div className="mb-2 flex items-center gap-2 text-sm font-medium text-amber-900 dark:text-amber-100">
+                    <AlertTriangle className="size-4 shrink-0" />
+                    Foto sem par ({totalPhotos}ª foto)
+                  </div>
+                  <p className="mb-3 text-xs text-amber-900/90 dark:text-amber-100/90">
+                    Esta imagem não será enviada até existir a segunda foto do
+                    mesmo cartão. Tire ou envie o verso em seguida, ou remova
+                    esta foto.
+                  </p>
+                  <div className="flex max-w-sm flex-col gap-2 sm:flex-row">
                     <ThumbnailSlot
-                      label="Frente"
-                      globalIndex={idxA}
-                      image={pair.front}
+                      label="Aguardando par"
+                      globalIndex={totalPhotos}
+                      image={orphan}
                       disabled={isProcessing}
-                      onRemove={() => removeImage(pair.front.id)}
-                    />
-                    <ThumbnailSlot
-                      label="Verso"
-                      globalIndex={idxB}
-                      image={pair.back}
-                      disabled={isProcessing}
-                      onRemove={() => removeImage(pair.back.id)}
+                      onRemove={() => removeImage(orphan.id)}
                     />
                   </div>
-                </CardContent>
-              </Card>
-            );
-          })}
+                </div>
+              )}
+            </div>
+          </div>
         </div>
       )}
 
-      {orphan && (
-        <div
-          className="rounded-xl border-2 border-dashed border-amber-500/60 bg-amber-500/10 px-3 py-3 dark:bg-amber-500/15"
-          role="status"
-        >
-          <div className="mb-2 flex items-center gap-2 text-sm font-medium text-amber-900 dark:text-amber-100">
-            <AlertTriangle className="size-4 shrink-0" />
-            Foto sem par ({totalPhotos}ª foto)
-          </div>
-          <p className="mb-3 text-xs text-amber-900/90 dark:text-amber-100/90">
-            Esta imagem não será enviada até existir a segunda foto do mesmo
-            cartão. Tire ou envie o verso em seguida, ou remova esta foto.
-          </p>
-          <div className="flex max-w-sm flex-col gap-2 sm:flex-row">
-            <ThumbnailSlot
-              label="Aguardando par"
-              globalIndex={totalPhotos}
-              image={orphan}
-              disabled={isProcessing}
-              onRemove={() => removeImage(orphan.id)}
-            />
-          </div>
+      
+      {totalPhotos > 0 && totalPhotos < 2 && (
+        <p className="text-sm text-muted-foreground">
+          Adicione pelo menos <strong>2 fotos</strong> (frente e verso) para
+          processar.
+        </p>
+      )}
+
+      {isProcessing && (
+        <div className="rounded-xl border border-border/60 bg-accent/50 p-4">
+          <p className="text-sm text-muted-foreground">Aguarde</p>
+          <p className="text-base font-medium">{progressLabel}</p>
         </div>
+      )}
+
+      {lastResultSummary && !isProcessing && (
+        <p className="rounded-xl border border-border/60 bg-muted/40 p-4 text-sm leading-relaxed text-muted-foreground">
+          {lastResultSummary}
+        </p>
       )}
 
       {totalPhotos > 0 && (
@@ -452,59 +708,6 @@ export function CameraCapture({ onDetectedTimes }: CameraCaptureProps) {
         </div>
       )}
 
-      {totalPhotos > 0 && totalPhotos < 2 && (
-        <p className="text-sm text-muted-foreground">
-          Adicione pelo menos <strong>2 fotos</strong> (frente e verso) para
-          processar.
-        </p>
-      )}
-
-      {isProcessing && (
-        <div className="rounded-xl border border-border/60 bg-accent/50 p-4">
-          <p className="text-sm text-muted-foreground">Aguarde</p>
-          <p className="text-base font-medium">{progressLabel}</p>
-        </div>
-      )}
-
-      {lastBatchReport && !isProcessing && (
-        <div className="flex flex-col gap-2 rounded-xl border border-emerald-500/40 bg-emerald-500/10 p-4 dark:bg-emerald-500/15">
-          <div className="flex items-start gap-2">
-            <CheckCircle2 className="mt-0.5 size-5 shrink-0 text-emerald-600 dark:text-emerald-400" />
-            <div className="min-w-0 flex-1 space-y-1">
-              <p className="text-sm font-medium text-emerald-900 dark:text-emerald-100">
-                Último relatório em lote
-              </p>
-              <p className="text-xs text-emerald-900/85 dark:text-emerald-100/85">
-                O CSV já foi baixado. Você pode gerar o arquivo novamente sem
-                reprocessar.
-              </p>
-            </div>
-          </div>
-          <Button
-            type="button"
-            variant="secondary"
-            size="sm"
-            className="w-full sm:w-fit"
-            onClick={() => downloadHrReportCsv(lastBatchReport)}
-          >
-            <FileDown className="size-4" />
-            Baixar CSV novamente
-          </Button>
-        </div>
-      )}
-
-      {lastResultSummary && !isProcessing && (
-        <p className="rounded-xl border border-border/60 bg-muted/40 p-4 text-sm leading-relaxed text-muted-foreground">
-          {lastResultSummary}
-        </p>
-      )}
-
-      {process.env.NODE_ENV === "development" && rawResponse && (
-        <pre className="max-h-40 overflow-auto rounded-lg border border-dashed bg-muted p-3 text-xs whitespace-pre-wrap">
-          {rawResponse.slice(0, 4000)}
-          {rawResponse.length > 4000 ? "…" : ""}
-        </pre>
-      )}
     </section>
   );
 }

@@ -67,8 +67,10 @@ async function postOcrPair(
   fileB: File,
 ): Promise<OcrPairResponse> {
   const formData = new FormData();
-  const compressedA = await compressImage(fileA);
-  const compressedB = await compressImage(fileB);
+  const [compressedA, compressedB] = await Promise.all([
+    compressImage(fileA),
+    compressImage(fileB),
+  ]);
   formData.append("images", compressedA, fileA.name);
   formData.append("images", compressedB, fileB.name);
 
@@ -111,14 +113,25 @@ export async function recognizeTimecardPairWithGemini(
   };
 }
 
+type BatchOcrApiResponse = {
+  batch: true;
+  pairs: Array<{
+    pairIndex: number;
+    employeeName?: string;
+    detections?: DetectedDayTimes[];
+    raw?: string;
+    error?: string;
+  }>;
+};
+
 /**
- * Processa vários funcionários em paralelo (um par de fotos por funcionário).
+ * Processa vários funcionários em paralelo no servidor (uma requisição HTTP;
+ * o Node dispara todas as chamadas ao Gemini com Promise.all).
  * Falhas em um par não interrompem os demais.
  */
 export async function recognizeTimecardBatchWithGemini(
   allFiles: File[],
   options?: {
-    onPairProgress?: (done: number, total: number) => void;
     /** Imagens excluídas antes do lote (ex.: sobra ímpar na fila). */
     unpairedImageCount?: number;
   },
@@ -130,37 +143,52 @@ export async function recognizeTimecardBatchWithGemini(
     (options?.unpairedImageCount ?? 0) + (allFiles.length - pairs.length * 2);
   const total = pairs.length;
 
-  let completed = 0;
-  const employees: HrBatchEmployeeResult[] = await Promise.all(
-    pairs.map(async ([a, b], pairIndex) => {
-      try {
-        const r = await postOcrPair(a, b);
-        return {
-          pairIndex,
-          employeeName: r.employeeName ?? "",
-          detections: r.detections ?? [],
-          raw: r.raw ?? "",
-        };
-      } catch (error) {
-        const message =
-          error instanceof Error ? error.message : "Erro desconhecido";
-        console.error(
-          `[OCR lote] Falha no par ${pairIndex + 1} (${a.name} + ${b.name}):`,
-          message,
-        );
-        return {
-          pairIndex,
-          employeeName: "",
-          detections: [],
-          raw: "",
-          error: message,
-        };
-      } finally {
-        completed += 1;
-        options?.onPairProgress?.(completed, total);
-      }
-    }),
+  if (total === 0) {
+    return {
+      report: buildHrBatchReport([], skippedImageCount),
+    };
+  }
+
+  const compressedBlobs = await Promise.all(
+    allFiles.map((file) => compressImage(file)),
   );
+  const formData = new FormData();
+  allFiles.forEach((file, i) => {
+    formData.append("images", compressedBlobs[i], file.name);
+  });
+
+  const response = await fetch("/api/ocr", {
+    method: "POST",
+    body: formData,
+  });
+
+  const data = (await response.json()) as BatchOcrApiResponse & {
+    error?: string;
+  };
+
+  if (!response.ok) {
+    throw new Error(data.error ?? `Erro HTTP ${response.status}`);
+  }
+
+  if (!data.batch || !Array.isArray(data.pairs)) {
+    throw new Error("Resposta inesperada do servidor (esperado lote paralelo).");
+  }
+
+  const employees: HrBatchEmployeeResult[] = data.pairs.map((p) => {
+    if (p.error) {
+      console.error(
+        `[OCR lote] Falha no par ${(p.pairIndex ?? 0) + 1}:`,
+        p.error,
+      );
+    }
+    return {
+      pairIndex: p.pairIndex,
+      employeeName: p.employeeName ?? "",
+      detections: p.detections ?? [],
+      raw: p.raw ?? "",
+      ...(p.error ? { error: p.error } : {}),
+    };
+  });
 
   employees.sort((a, b) => a.pairIndex - b.pairIndex);
 
@@ -169,8 +197,12 @@ export async function recognizeTimecardBatchWithGemini(
   return { report };
 }
 
-export function downloadHrReportCsv(report: HrBatchReport, filename?: string) {
-  const csv = buildHrReportCsv(report);
+export function downloadHrReportCsv(
+  report: HrBatchReport,
+  filename?: string,
+  onlyDays?: Set<number> | null,
+) {
+  const csv = buildHrReportCsv(report, { onlyDays });
   const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");

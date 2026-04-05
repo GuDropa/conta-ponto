@@ -6,6 +6,7 @@ import { ArrowLeft, Download, FileSpreadsheet, FileText, Pencil, Share2 } from "
 import Link from "next/link";
 
 import { Button } from "@/components/ui/button";
+import { useBeforeUnloadWhen } from "@/hooks/use-before-unload-warning";
 import { TIMECARD_STORAGE_KEY } from "@/lib/timecard-defaults";
 import {
   calculateMonthlySummary,
@@ -66,6 +67,12 @@ export function HoursReport() {
         .map((row) => ({ row, summary: summarizeWorkedTime(row) }))
         .filter(({ summary }) => summary.minutes > 0),
     [rows],
+  );
+
+  useBeforeUnloadWhen(
+    isGenerating ||
+      (!submitted &&
+        (employeeName.trim().length > 0 || workedDays.length > 0)),
   );
 
   const emissionDate = useMemo(() => formatEmissionDate(new Date()), []);

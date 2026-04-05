@@ -1,6 +1,9 @@
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { NextRequest, NextResponse } from "next/server";
 
+/** Lotes grandes podem exceder o default em deploy (ex.: Vercel). */
+export const maxDuration = 300;
+
 const SYSTEM_PROMPT = `Você é um sistema de OCR especializado em cartões de ponto mecânicos brasileiros (modelo Evo Ponto Fácil).
 
 Você recebe EXATAMENTE 2 imagens do MESMO cartão de ponto de UM ÚNICO funcionário:
@@ -10,6 +13,8 @@ Você recebe EXATAMENTE 2 imagens do MESMO cartão de ponto de UM ÚNICO funcion
 Sua tarefa é:
 1) Ler o NOME DO COLABORADOR impresso/manuscrito no cartão (campo de identificação do funcionário).
 2) Extrair TODOS os horários carimbados mecanicamente (tinta vermelha, formato HH:MM) em AMBAS as faces e CONSOLIDAR em uma única lista por dia do mês (1 a 31).
+
+No JSON, o campo "day" de cada item em "days" deve ser sempre o número do dia do mês (1 a 31) tal como aparece na numeração da linha do cartão (primeira coluna da tabela), para conferência no RH — não use outro critério para "day".
 
 Estrutura típica da tabela:
 - Manhã: Entrada, Saída
@@ -44,8 +49,8 @@ REGRAS DE SAÍDA (obrigatório):
 
 const MODEL_FALLBACK_ORDER = [
   "gemini-2.5-flash",
-  "gemini-2.5-pro",
   "gemini-2.5-flash-lite",
+  "gemini-2.5-pro",
 ];
 
 const MAX_RETRIES = 2;
@@ -144,6 +149,80 @@ async function callWithFallback(
   );
 }
 
+function filesToImageParts(files: File[]): Promise<GeminiImagePart[]> {
+  return Promise.all(
+    files.map(async (file) => {
+      const buffer = await file.arrayBuffer();
+      const base64 = Buffer.from(buffer).toString("base64");
+      return {
+        inlineData: {
+          data: base64,
+          mimeType: file.type || "image/jpeg",
+        },
+      };
+    }),
+  );
+}
+
+type OcrPairSuccessBody = {
+  employeeName: string;
+  detections: Array<{
+    day: number;
+    values: Record<string, string>;
+  }>;
+  raw: string;
+  modelUsed: string;
+};
+
+async function runOcrOnPair(
+  genAI: GoogleGenerativeAI,
+  pair: [File, File],
+): Promise<OcrPairSuccessBody> {
+  const imageParts = await filesToImageParts([pair[0], pair[1]]);
+  const { text: responseText, modelUsed } = await callWithFallback(
+    genAI,
+    imageParts,
+  );
+
+  let parsed: ParsedResponse;
+  try {
+    parsed = extractJsonObject(responseText);
+  } catch {
+    throw new Error("Resposta do modelo não contém JSON válido.");
+  }
+
+  const days = Array.isArray(parsed.days) ? parsed.days : [];
+  const employeeName =
+    typeof parsed.employeeName === "string" ? parsed.employeeName : "";
+
+  const detections = days.map((item) => ({
+    day: item.day,
+    values: {
+      ...(item.entry1 ? { entry1: item.entry1 } : {}),
+      ...(item.exit1 ? { exit1: item.exit1 } : {}),
+      ...(item.entry2 ? { entry2: item.entry2 } : {}),
+      ...(item.exit2 ? { exit2: item.exit2 } : {}),
+      ...(item.extraEntry ? { extraEntry: item.extraEntry } : {}),
+      ...(item.extraExit ? { extraExit: item.extraExit } : {}),
+    },
+  }));
+
+  return {
+    employeeName,
+    detections,
+    raw: responseText,
+    modelUsed,
+  };
+}
+
+function chunkIntoPairs(files: File[]): [File, File][] {
+  const pairs: [File, File][] = [];
+  for (let i = 0; i + 1 < files.length; i += 2) {
+    pairs.push([files[i], files[i + 1]]);
+  }
+  return pairs;
+}
+
 export async function POST(request: NextRequest) {
   try {
     const apiKey = process.env.GEMINI_API_KEY;
@@ -164,71 +243,69 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    if (images.length !== 2) {
+    if (images.length % 2 !== 0) {
       return NextResponse.json(
         {
           error:
-            "Envie exatamente 2 imagens por requisição (frente e verso do mesmo cartão).",
+            "Quantidade par de imagens: cada funcionário precisa de frente e verso (2 fotos).",
         },
         { status: 400 },
       );
     }
 
-    const genAI = new GoogleGenerativeAI(apiKey);
+    if (images.length === 2) {
+      const genAI = new GoogleGenerativeAI(apiKey);
+      try {
+        const body = await runOcrOnPair(genAI, [images[0], images[1]]);
+        return NextResponse.json(body);
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Erro desconhecido";
+        if (message.includes("JSON")) {
+          return NextResponse.json(
+            { error: message, raw: "", modelUsed: "" },
+            { status: 422 },
+          );
+        }
+        return NextResponse.json({ error: message }, { status: 500 });
+      }
+    }
 
-    const imageParts: GeminiImagePart[] = await Promise.all(
-      images.map(async (file) => {
-        const buffer = await file.arrayBuffer();
-        const base64 = Buffer.from(buffer).toString("base64");
-        return {
-          inlineData: {
-            data: base64,
-            mimeType: file.type || "image/jpeg",
-          },
-        };
+    const pairs = chunkIntoPairs(images);
+
+    // Uma instância do cliente por par evita qualquer serialização interna no SDK
+    // e deixa as chamadas ao Gemini de fato concorrentes no event loop.
+    const pairResults = await Promise.all(
+      pairs.map(async (pair, pairIndex) => {
+        const pairClient = new GoogleGenerativeAI(apiKey);
+        try {
+          const r = await runOcrOnPair(pairClient, pair);
+          return {
+            pairIndex,
+            employeeName: r.employeeName,
+            detections: r.detections,
+            raw: r.raw,
+            modelUsed: r.modelUsed,
+          };
+        } catch (error) {
+          const message =
+            error instanceof Error ? error.message : "Erro desconhecido";
+          return {
+            pairIndex,
+            employeeName: "",
+            detections: [] as OcrPairSuccessBody["detections"],
+            raw: "",
+            error: message,
+          };
+        }
       }),
     );
 
-    const { text: responseText, modelUsed } = await callWithFallback(
-      genAI,
-      imageParts,
-    );
-
-    let parsed: ParsedResponse;
-    try {
-      parsed = extractJsonObject(responseText);
-    } catch {
-      return NextResponse.json(
-        {
-          error: "Resposta do modelo não contém JSON válido.",
-          raw: responseText,
-          modelUsed,
-        },
-        { status: 422 },
-      );
-    }
-
-    const days = Array.isArray(parsed.days) ? parsed.days : [];
-    const employeeName =
-      typeof parsed.employeeName === "string" ? parsed.employeeName : "";
-
-    const detections = days.map((item) => ({
-      day: item.day,
-      values: {
-        ...(item.entry1 ? { entry1: item.entry1 } : {}),
-        ...(item.exit1 ? { exit1: item.exit1 } : {}),
-        ...(item.entry2 ? { entry2: item.entry2 } : {}),
-        ...(item.exit2 ? { exit2: item.exit2 } : {}),
-        ...(item.extraEntry ? { extraEntry: item.extraEntry } : {}),
-        ...(item.extraExit ? { extraExit: item.extraExit } : {}),
-      },
-    }));
+    pairResults.sort((a, b) => a.pairIndex - b.pairIndex);
 
     return NextResponse.json({
-      employeeName,
-      detections,
-      raw: responseText,
-      modelUsed,
+      batch: true as const,
+      pairs: pairResults,
     });
   } catch (error) {
     const message =
