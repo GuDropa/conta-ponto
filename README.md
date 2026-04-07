@@ -4,6 +4,10 @@ Sistema mobile-first para registro e controle de ponto dos colaboradores do Supe
 
 O app permite fotografar o cartao de ponto mecanico, extrair os horarios automaticamente via OCR e gerar um relatorio oficial de horas trabalhadas no mes.
 
+## Documentação (apresentação para RH e liderança)
+
+Veja a documentação completa em `docs/DOCUMENTACAO.md`.
+
 ## Funcionalidades
 
 ### Leitura de cartao de ponto (OCR)
