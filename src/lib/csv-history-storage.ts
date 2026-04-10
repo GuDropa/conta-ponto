@@ -15,6 +15,10 @@ export type CsvHistoryEntry = {
   report: HrBatchReport;
   /** Dias 1–31 incluídos no CSV; ausente ou null = todos. */
   csvIncludedDays?: number[] | null;
+  /** Mês de referência (1–12) para compor a coluna Data no CSV. */
+  referenceMonth?: number;
+  /** Ano de referência para compor a coluna Data no CSV. */
+  referenceYear?: number;
 };
 
 /**
@@ -77,6 +81,8 @@ function saveHistory(entries: CsvHistoryEntry[]) {
 export function appendEntry(
   report: HrBatchReport,
   csvIncludedDays?: number[] | null,
+  referenceMonth?: number,
+  referenceYear?: number,
 ): CsvHistoryEntry {
   const entry: CsvHistoryEntry = {
     id:
@@ -86,6 +92,8 @@ export function appendEntry(
     createdAt: new Date().toISOString(),
     report: sanitizeReportForStorage(report),
     csvIncludedDays: normalizeStoredDays(csvIncludedDays ?? null),
+    ...(referenceMonth != null ? { referenceMonth } : {}),
+    ...(referenceYear != null ? { referenceYear } : {}),
   };
   const list = loadHistory();
   const next = [entry, ...list].slice(0, MAX_HISTORY_ENTRIES);

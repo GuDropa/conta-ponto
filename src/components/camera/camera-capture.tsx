@@ -158,6 +158,9 @@ export function CameraCapture({ onHistoryUpdated }: CameraCaptureProps) {
   const [previewsExpanded, setPreviewsExpanded] = useState(false);
   const [draftRecovered, setDraftRecovered] = useState(false);
   const [csvDays, setCsvDays] = useState<Set<number>>(defaultCsvDaySelection);
+
+  const [referenceMonth, setReferenceMonth] = useState<number>(() => new Date().getMonth() + 1);
+  const [referenceYear, setReferenceYear] = useState<number>(() => new Date().getFullYear());
   const { pairs, orphan } = useMemo(
     () => buildPairGroups(images),
     [images],
@@ -366,8 +369,9 @@ export function CameraCapture({ onHistoryUpdated }: CameraCaptureProps) {
           report,
           undefined,
           onlyDaysForCsv,
+          { referenceMonth, referenceYear },
         );
-        appendEntry(report, selectionToStoredCsvDays(csvDays));
+        appendEntry(report, selectionToStoredCsvDays(csvDays), referenceMonth, referenceYear);
         onHistoryUpdated?.();
 
         const namePart = result.employeeName
@@ -427,13 +431,14 @@ export function CameraCapture({ onHistoryUpdated }: CameraCaptureProps) {
         report,
         undefined,
         onlyDaysForCsv,
+        { referenceMonth, referenceYear },
       );
-      appendEntry(report, selectionToStoredCsvDays(csvDays));
+      appendEntry(report, selectionToStoredCsvDays(csvDays), referenceMonth, referenceYear);
       onHistoryUpdated?.();
 
       let msg = `Relatório pronto: ${ok} cartão(ões) lidos com sucesso`;
       if (fail > 0) {
-        msg += `; ${fail} com erro (detalhes na coluna Observação do CSV)`;
+        msg += `; ${fail} com erro (nome do colaborador indica o problema no CSV)`;
       }
       msg +=
         ". O CSV foi baixado e guardado — aba «Histórico» para baixar de novo quando quiser.";
@@ -540,6 +545,28 @@ export function CameraCapture({ onHistoryUpdated }: CameraCaptureProps) {
           <Upload className="size-4 shrink-0" />
           Galeria
         </Button>
+      </div>
+
+      <div className="rounded-xl border border-border/80 bg-muted/25 p-3">
+        <p className="mb-2 text-sm font-medium text-foreground">
+          Mês de referência
+        </p>
+        <p className="mb-3 text-xs text-muted-foreground">
+          Usado nas colunas Data, Mês e Ano do CSV gerado.
+        </p>
+        <input
+          type="month"
+          disabled={isProcessing}
+          value={`${referenceYear}-${String(referenceMonth).padStart(2, "0")}`}
+          onChange={(e) => {
+            const [y, m] = e.target.value.split("-").map(Number);
+            if (y && m) {
+              setReferenceYear(y);
+              setReferenceMonth(m);
+            }
+          }}
+          className="h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+        />
       </div>
 
       <div className="rounded-xl border border-border/80 bg-muted/25 p-3">

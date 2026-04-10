@@ -2,6 +2,7 @@ import type { DetectedDayTimes } from "@/lib/ocr-timecard-parser";
 import {
   buildHrBatchReport,
   buildHrReportCsv,
+  type BuildHrReportCsvOptions,
   type HrBatchEmployeeResult,
   type HrBatchReport,
 } from "@/lib/hr-batch-report";
@@ -201,8 +202,9 @@ export function downloadHrReportCsv(
   report: HrBatchReport,
   filename?: string,
   onlyDays?: Set<number> | null,
+  options?: Pick<BuildHrReportCsvOptions, "referenceMonth" | "referenceYear">,
 ) {
-  const csv = buildHrReportCsv(report, { onlyDays });
+  const csv = buildHrReportCsv(report, { onlyDays, ...options });
   const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");

@@ -80,10 +80,15 @@ export function CsvHistoryPanel({ historyVersion }: CsvHistoryPanelProps) {
   }, [historyVersion, refresh]);
 
   function handleDownload(entry: CsvHistoryEntry) {
+    const fallback = new Date(entry.createdAt);
     downloadHrReportCsv(
       entry.report,
       filenameForEntry(entry),
       includedDaysArrayToSet(entry.csvIncludedDays ?? null),
+      {
+        referenceMonth: entry.referenceMonth ?? fallback.getMonth() + 1,
+        referenceYear: entry.referenceYear ?? fallback.getFullYear(),
+      },
     );
   }
 

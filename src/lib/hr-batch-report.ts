@@ -1,5 +1,5 @@
+import { summarizeWorkedTime } from "@/lib/time-utils";
 import type { DetectedDayTimes } from "@/lib/ocr-timecard-parser";
-import type { TimeField } from "@/types/timecard";
 
 export type HrBatchEmployeeResult = {
   pairIndex: number;
@@ -19,26 +19,23 @@ export type HrBatchReport = {
 export const ALL_CSV_DAYS = Array.from({ length: 31 }, (_, i) => i + 1);
 
 const CSV_HEADER = [
-  "Par",
-  "Colaborador",
+  "Data",
+  "Nome",
+  "Setor",
+  "Entrada",
+  "Saida",
+  "Retorno",
+  "Saida2",
+  "Total",
+  "Valor Hora",
+  "Total a Receber",
+  "Total Hora Adc Noturno",
+  "Valor Prêmio Produção",
+  "Valor Extra",
   "Dia",
-  "Entrada Manhã",
-  "Saída Manhã",
-  "Entrada Tarde",
-  "Saída Tarde",
-  "Extra Entrada",
-  "Extra Saída",
-  "Observação",
+  "Mês",
+  "Ano",
 ] as const;
-
-const TIME_FIELDS: TimeField[] = [
-  "entry1",
-  "exit1",
-  "entry2",
-  "exit2",
-  "extraEntry",
-  "extraExit",
-];
 
 /**
  * Valida e deduplica dias (1–31); retorna array ordenado.
@@ -116,67 +113,97 @@ export function buildHrBatchReport(
 export type BuildHrReportCsvOptions = {
   /** `null`/`undefined` = todos os dias; `Set` vazio = sem linhas de calendário */
   onlyDays?: Set<number> | null;
+  /**
+   * Mês de referência (1–12) para compor a coluna Data e Mês.
+   * Quando ausente, usa o mês atual no momento da geração.
+   */
+  referenceMonth?: number;
+  /**
+   * Ano de referência (ex.: 2026) para compor a coluna Data e Ano.
+   * Quando ausente, usa o ano atual no momento da geração.
+   */
+  referenceYear?: number;
 };
 
 /**
- * Gera CSV (UTF-8 com BOM) compatível com Excel em PT-BR.
+ * Gera CSV (UTF-8 com BOM) compatível com Excel em PT-BR, no padrão da
+ * planilha central de ponto. Separador: vírgula.
  * O filtro `onlyDays` aplica-se só à exportação; não altera o `report` passado.
+ * Colunas Setor, Valor Hora e Total a Receber são deixadas vazias para
+ * preenchimento por fórmula na planilha de destino.
  */
 export function buildHrReportCsv(
   report: HrBatchReport,
   options?: BuildHrReportCsvOptions,
 ): string {
   const working = filterReportDays(report, options?.onlyDays);
-  const sep = ";";
+  const sep = ",";
+
+  const now = new Date();
+  const refMonth =
+    options?.referenceMonth != null &&
+    options.referenceMonth >= 1 &&
+    options.referenceMonth <= 12
+      ? options.referenceMonth
+      : now.getMonth() + 1;
+  const refYear =
+    options?.referenceYear != null && options.referenceYear > 2000
+      ? options.referenceYear
+      : now.getFullYear();
+
+  const EMPTY_ROW = Array<string>(CSV_HEADER.length).fill("");
+
   const lines: string[] = [CSV_HEADER.join(sep)];
 
   for (const emp of working.employees) {
     if (emp.error) {
-      lines.push(
-        [
-          String(emp.pairIndex + 1),
-          escapeCsvField(emp.employeeName || ""),
-          "",
-          "",
-          "",
-          "",
-          "",
-          "",
-          "",
-          "",
-          escapeCsvField(emp.error),
-        ].join(sep),
+      const row = [...EMPTY_ROW];
+      row[1] = escapeCsvField(
+        `${emp.employeeName || "?"} — ERRO: ${emp.error}`,
       );
+      lines.push(row.join(sep));
       continue;
     }
 
     if (emp.detections.length === 0) {
-      lines.push(
-        [
-          String(emp.pairIndex + 1),
-          escapeCsvField(emp.employeeName || ""),
-          "",
-          "",
-          "",
-          "",
-          "",
-          "",
-          "",
-          "",
-        ].join(sep),
-      );
+      const row = [...EMPTY_ROW];
+      row[1] = escapeCsvField(emp.employeeName || "");
+      lines.push(row.join(sep));
       continue;
     }
 
-    for (const row of emp.detections) {
-      const cells = [
-        String(emp.pairIndex + 1),
-        escapeCsvField(emp.employeeName || ""),
-        String(row.day),
-        ...TIME_FIELDS.map((f) => escapeCsvField(row.values[f] ?? "")),
-        "",
+    for (const detection of emp.detections) {
+      const v = detection.values;
+      const workedFields = {
+        entry1: v.entry1 ?? "",
+        exit1: v.exit1 ?? "",
+        entry2: v.entry2 ?? "",
+        exit2: v.exit2 ?? "",
+        extraEntry: v.extraEntry ?? "",
+        extraExit: v.extraExit ?? "",
+      };
+      const total = summarizeWorkedTime(workedFields).hhmm;
+      const data = `${detection.day}/${refMonth}/${refYear}`;
+
+      const row = [
+        data,                                    // Data
+        escapeCsvField(emp.employeeName || ""),  // Nome
+        "",                                      // Setor (fórmula)
+        escapeCsvField(v.entry1 ?? ""),          // Entrada
+        escapeCsvField(v.exit1 ?? ""),           // Saida
+        escapeCsvField(v.entry2 ?? ""),          // Retorno
+        escapeCsvField(v.exit2 ?? ""),           // Saida2
+        total,                                   // Total
+        "",                                      // Valor Hora (fórmula)
+        "",                                      // Total a Receber (fórmula)
+        "",                                      // Total Hora Adc Noturno
+        "",                                      // Valor Prêmio Produção
+        "",                                      // Valor Extra
+        String(detection.day),                   // Dia
+        String(refMonth),                        // Mês
+        String(refYear),                         // Ano
       ];
-      lines.push(cells.join(sep));
+      lines.push(row.join(sep));
     }
   }
 
@@ -188,7 +215,7 @@ export function buildHrReportCsv(
         escapeCsvField(
           `AVISO: ${working.skippedImageCount} imagem(ns) sem par (não processadas).`,
         ),
-        ...Array(8).fill(""),
+        ...Array(CSV_HEADER.length - 2).fill(""),
       ].join(sep),
     );
   }
@@ -197,7 +224,7 @@ export function buildHrReportCsv(
 }
 
 function escapeCsvField(value: string): string {
-  if (value.includes(";") || value.includes('"') || value.includes("\n")) {
+  if (value.includes(",") || value.includes('"') || value.includes("\n")) {
     return `"${value.replace(/"/g, '""')}"`;
   }
   return value;
