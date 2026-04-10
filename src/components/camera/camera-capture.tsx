@@ -147,9 +147,13 @@ export function CameraCapture({ onHistoryUpdated }: CameraCaptureProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const imagesRef = useRef<SelectedImage[]>([]);
   const draftSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const batchProgressIntervalRef = useRef<ReturnType<typeof setInterval> | null>(
+    null,
+  );
   const [images, setImages] = useState<SelectedImage[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [progressLabel, setProgressLabel] = useState("");
+  const [progressHint, setProgressHint] = useState("");
   const [lastResultSummary, setLastResultSummary] = useState("");
   const [previewsExpanded, setPreviewsExpanded] = useState(false);
   const [draftRecovered, setDraftRecovered] = useState(false);
@@ -170,6 +174,15 @@ export function CameraCapture({ onHistoryUpdated }: CameraCaptureProps) {
   useEffect(() => {
     return () => {
       imagesRef.current.forEach((img) => URL.revokeObjectURL(img.previewUrl));
+    };
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (batchProgressIntervalRef.current) {
+        clearInterval(batchProgressIntervalRef.current);
+        batchProgressIntervalRef.current = null;
+      }
     };
   }, []);
 
@@ -322,7 +335,15 @@ export function CameraCapture({ onHistoryUpdated }: CameraCaptureProps) {
     );
 
     setIsProcessing(true);
+    setProgressHint("");
     setProgressLabel("Enviando para a IA…");
+
+    function clearBatchProgressTicker() {
+      if (batchProgressIntervalRef.current) {
+        clearInterval(batchProgressIntervalRef.current);
+        batchProgressIntervalRef.current = null;
+      }
+    }
 
     try {
       if (filePairs.length === 1) {
@@ -366,12 +387,37 @@ export function CameraCapture({ onHistoryUpdated }: CameraCaptureProps) {
         return;
       }
 
-      setProgressLabel(
-        `Processando ${filePairs.length} cartão(ões) em paralelo no servidor…`,
+      const totalPairs = filePairs.length;
+      const startedAt = Date.now();
+      const estimatedMs = Math.min(
+        150_000,
+        Math.max(20_000, totalPairs * 1_800),
       );
+
+      function updateBatchProgressUi() {
+        const elapsed = Date.now() - startedAt;
+        const ratio = Math.min(1, elapsed / estimatedMs);
+        let shown = Math.max(1, Math.ceil(ratio * totalPairs));
+        if (shown >= totalPairs) shown = totalPairs - 1;
+        setProgressLabel(
+          `Processando cartões [${shown}/${totalPairs}]`,
+        );
+        setProgressHint(
+          "Compactação e envio das fotos, depois leitura no servidor. Em lotes grandes costuma levar cerca de 1 a 2 minutos — não feche nem atualize esta aba. O contador [x/y] é uma estimativa de andamento, não cada cartão já concluído.",
+        );
+      }
+
+      clearBatchProgressTicker();
+      updateBatchProgressUi();
+      batchProgressIntervalRef.current = setInterval(updateBatchProgressUi, 450);
+
       const batch = await recognizeTimecardBatchWithGemini(filesPaired, {
         unpairedImageCount: skippedOdd ? 1 : 0,
       });
+
+      clearBatchProgressTicker();
+      setProgressLabel(`Finalizando [${totalPairs}/${totalPairs}]`);
+      setProgressHint("Gerando o relatório e o CSV…");
 
       const { report } = batch;
       const ok = report.employees.filter((e) => !e.error).length;
@@ -402,8 +448,10 @@ export function CameraCapture({ onHistoryUpdated }: CameraCaptureProps) {
         error instanceof Error ? error.message : "Erro desconhecido";
       setLastResultSummary(`Erro: ${message}`);
     } finally {
+      clearBatchProgressTicker();
       setIsProcessing(false);
       setProgressLabel("");
+      setProgressHint("");
     }
   }
 
@@ -668,7 +716,12 @@ export function CameraCapture({ onHistoryUpdated }: CameraCaptureProps) {
       {isProcessing && (
         <div className="rounded-xl border border-border/60 bg-accent/50 p-4">
           <p className="text-sm text-muted-foreground">Aguarde</p>
-          <p className="text-base font-medium">{progressLabel}</p>
+          <p className="text-base font-medium text-foreground">{progressLabel}</p>
+          {progressHint ? (
+            <p className="mt-2 text-sm leading-relaxed text-muted-foreground">
+              {progressHint}
+            </p>
+          ) : null}
         </div>
       )}
 
