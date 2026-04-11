@@ -1,5 +1,6 @@
-import { GoogleGenerativeAI } from "@google/generative-ai";
 import { NextRequest, NextResponse } from "next/server";
+import { buildDefaultOcrChain, runVisionOcrChain } from "@/lib/ocr-providers/chain";
+import type { VisionImagePart } from "@/lib/ocr-providers/types";
 
 /** Lotes grandes podem exceder o default em deploy (ex.: Vercel). */
 export const maxDuration = 300;
@@ -47,23 +48,6 @@ REGRAS DE SAÍDA (obrigatório):
 - Se não houver nenhum horário legível, use "days": [].
 - Atenção a dígitos borrados nos carimbos mecânicos.`;
 
-const MODEL_FALLBACK_ORDER = [
-  "gemini-2.5-pro",
-  "gemini-2.5-flash",
-  "gemini-2.5-flash-lite",
-];
-
-const MAX_RETRIES = 2;
-const RETRY_DELAY_MS = 4000;
-
-function sleep(ms: number) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-type GeminiImagePart = {
-  inlineData: { data: string; mimeType: string };
-};
-
 type ParsedRow = {
   day: number;
   entry1?: string;
@@ -101,65 +85,12 @@ function extractJsonObject(text: string): ParsedResponse {
   throw new Error("JSON incompleto na resposta.");
 }
 
-async function tryGenerateContent(
-  genAI: GoogleGenerativeAI,
-  modelName: string,
-  imageParts: GeminiImagePart[],
-): Promise<string> {
-  const model = genAI.getGenerativeModel({ model: modelName });
-  const result = await model.generateContent([SYSTEM_PROMPT, ...imageParts]);
-  return result.response.text();
-}
-
-async function callWithFallback(
-  genAI: GoogleGenerativeAI,
-  imageParts: GeminiImagePart[],
-): Promise<{ text: string; modelUsed: string }> {
-  for (const modelName of MODEL_FALLBACK_ORDER) {
-    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-      try {
-        const text = await tryGenerateContent(genAI, modelName, imageParts);
-        return { text, modelUsed: modelName };
-      } catch (error) {
-        const message =
-          error instanceof Error ? error.message : String(error);
-        const isRateLimit = message.includes("429") || message.includes("quota");
-        const isNetworkError =
-          message.includes("fetch failed") ||
-          message.includes("ECONNRESET") ||
-          message.includes("ETIMEDOUT") ||
-          message.includes("network");
-
-        if ((isRateLimit || isNetworkError) && attempt < MAX_RETRIES) {
-          await sleep(RETRY_DELAY_MS * (attempt + 1));
-          continue;
-        }
-
-        if (isRateLimit) {
-          break;
-        }
-
-        throw error;
-      }
-    }
-  }
-
-  throw new Error(
-    "Quota excedida em todos os modelos disponíveis. Aguarde alguns minutos e tente novamente.",
-  );
-}
-
-function filesToImageParts(files: File[]): Promise<GeminiImagePart[]> {
+async function filesToImageParts(files: File[]): Promise<VisionImagePart[]> {
   return Promise.all(
     files.map(async (file) => {
       const buffer = await file.arrayBuffer();
       const base64 = Buffer.from(buffer).toString("base64");
-      return {
-        inlineData: {
-          data: base64,
-          mimeType: file.type || "image/jpeg",
-        },
-      };
+      return { base64, mimeType: file.type || "image/jpeg" };
     }),
   );
 }
@@ -175,12 +106,17 @@ type OcrPairSuccessBody = {
 };
 
 async function runOcrOnPair(
-  genAI: GoogleGenerativeAI,
   pair: [File, File],
 ): Promise<OcrPairSuccessBody> {
+  const chain = buildDefaultOcrChain({
+    GEMINI_API_KEY: process.env.GEMINI_API_KEY,
+    ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
+  });
+
   const imageParts = await filesToImageParts([pair[0], pair[1]]);
-  const { text: responseText, modelUsed } = await callWithFallback(
-    genAI,
+  const { text: responseText, modelUsed } = await runVisionOcrChain(
+    chain,
+    SYSTEM_PROMPT,
     imageParts,
   );
 
@@ -207,12 +143,7 @@ async function runOcrOnPair(
     },
   }));
 
-  return {
-    employeeName,
-    detections,
-    raw: responseText,
-    modelUsed,
-  };
+  return { employeeName, detections, raw: responseText, modelUsed };
 }
 
 function chunkIntoPairs(files: File[]): [File, File][] {
@@ -225,10 +156,12 @@ function chunkIntoPairs(files: File[]): [File, File][] {
 
 export async function POST(request: NextRequest) {
   try {
-    const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey) {
+    if (!process.env.GEMINI_API_KEY && !process.env.ANTHROPIC_API_KEY) {
       return NextResponse.json(
-        { error: "GEMINI_API_KEY não configurada no servidor." },
+        {
+          error:
+            "Nenhuma chave de API configurada. Configure GEMINI_API_KEY ou ANTHROPIC_API_KEY.",
+        },
         { status: 500 },
       );
     }
@@ -254,9 +187,8 @@ export async function POST(request: NextRequest) {
     }
 
     if (images.length === 2) {
-      const genAI = new GoogleGenerativeAI(apiKey);
       try {
-        const body = await runOcrOnPair(genAI, [images[0], images[1]]);
+        const body = await runOcrOnPair([images[0], images[1]]);
         return NextResponse.json(body);
       } catch (error) {
         const message =
@@ -273,26 +205,23 @@ export async function POST(request: NextRequest) {
 
     const pairs = chunkIntoPairs(images);
 
-    // Uma instância do cliente por par evita qualquer serialização interna no SDK
-    // e deixa as chamadas ao Gemini de fato concorrentes no event loop.
+    // Uma instância da cadeia por par para manter concorrência real no event loop.
     const pairResults = await Promise.all(
       pairs.map(async (pair, pairIndex) => {
-        const pairClient = new GoogleGenerativeAI(apiKey);
         try {
-          const r = await runOcrOnPair(pairClient, pair);
+          const r = await runOcrOnPair(pair);
           return {
             pairIndex,
             employeeName: r.employeeName,
             detections: r.detections,
             raw: r.raw,
-            modelUsed: r.modelUsed,
           };
         } catch (error) {
           const message =
             error instanceof Error ? error.message : "Erro desconhecido";
           return {
             pairIndex,
-            employeeName: "",
+            employeeName: `Par ${pairIndex + 1}`,
             detections: [] as OcrPairSuccessBody["detections"],
             raw: "",
             error: message,

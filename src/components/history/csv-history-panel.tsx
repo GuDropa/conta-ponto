@@ -3,7 +3,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { FileDown, History, Pencil, Trash2 } from "lucide-react";
 
-import { CsvDayPicker } from "@/components/csv/csv-day-picker";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -16,12 +15,19 @@ import {
   clearHistory,
   loadHistory,
   removeEntry,
-  updateEntryIncludedDays,
+  updateEntryPeriod,
   type CsvHistoryEntry,
 } from "@/lib/csv-history-storage";
-import { storedCsvDaysToSelection } from "@/lib/csv-included-days-prefs";
-import { includedDaysArrayToSet } from "@/lib/hr-batch-report";
 import { downloadHrReportCsv } from "@/lib/gemini-ocr-client";
+import { includedDaysArrayToSet } from "@/lib/hr-batch-report";
+import {
+  currentMonthPeriod,
+  formatLocalIso,
+  mapDetectionsToPeriod,
+  referenceYearMonthFromPeriod,
+  validatePeriod,
+  type ReadingPeriod,
+} from "@/lib/reading-period-map";
 
 function formatDateTime(iso: string) {
   try {
@@ -46,11 +52,11 @@ function summarizeEntry(entry: CsvHistoryEntry) {
   return parts.join(" · ");
 }
 
-function formatCsvDaysLine(entry: CsvHistoryEntry) {
-  const d = entry.csvIncludedDays;
-  if (!d?.length) return "CSV: todos os dias do cartão";
-  if (d.length <= 10) return `CSV: dias ${d.join(", ")}`;
-  return `CSV: ${d.length} dias selecionados`;
+function formatPeriodLine(entry: CsvHistoryEntry): string | null {
+  if (!entry.readingPeriodStart || !entry.readingPeriodEnd) return null;
+  const start = formatLocalIso(entry.readingPeriodStart);
+  const end = formatLocalIso(entry.readingPeriodEnd);
+  return start === end ? `Período: ${start}` : `Período: ${start} a ${end}`;
 }
 
 function filenameForEntry(entry: CsvHistoryEntry) {
@@ -58,6 +64,13 @@ function filenameForEntry(entry: CsvHistoryEntry) {
   const pad = (n: number) => String(n).padStart(2, "0");
   const stamp = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
   return `relatorio-ponto-rh-${stamp}.csv`;
+}
+
+function periodFromEntry(entry: CsvHistoryEntry): ReadingPeriod {
+  if (entry.readingPeriodStart && entry.readingPeriodEnd) {
+    return { start: entry.readingPeriodStart, end: entry.readingPeriodEnd };
+  }
+  return currentMonthPeriod();
 }
 
 type CsvHistoryPanelProps = {
@@ -69,7 +82,7 @@ export function CsvHistoryPanel({ historyVersion }: CsvHistoryPanelProps) {
   const [entries, setEntries] = useState<CsvHistoryEntry[]>([]);
   const dialogRef = useRef<HTMLDialogElement>(null);
   const [editEntry, setEditEntry] = useState<CsvHistoryEntry | null>(null);
-  const [editDays, setEditDays] = useState<Set<number>>(new Set());
+  const [editPeriod, setEditPeriod] = useState<ReadingPeriod>(currentMonthPeriod);
 
   const refresh = useCallback(() => {
     setEntries(loadHistory());
@@ -80,15 +93,23 @@ export function CsvHistoryPanel({ historyVersion }: CsvHistoryPanelProps) {
   }, [historyVersion, refresh]);
 
   function handleDownload(entry: CsvHistoryEntry) {
-    const fallback = new Date(entry.createdAt);
+    let report = entry.report;
+    const period = periodFromEntry(entry);
+
+    if (entry.readingPeriodStart && entry.readingPeriodEnd) {
+      const employees = report.employees.map((emp) => {
+        if (emp.error) return emp;
+        const { detections } = mapDetectionsToPeriod(emp.detections, period);
+        return { ...emp, detections };
+      });
+      report = { ...report, employees };
+    }
+
     downloadHrReportCsv(
-      entry.report,
+      report,
       filenameForEntry(entry),
       includedDaysArrayToSet(entry.csvIncludedDays ?? null),
-      {
-        referenceMonth: entry.referenceMonth ?? fallback.getMonth() + 1,
-        referenceYear: entry.referenceYear ?? fallback.getFullYear(),
-      },
+      referenceYearMonthFromPeriod(period),
     );
   }
 
@@ -111,7 +132,7 @@ export function CsvHistoryPanel({ historyVersion }: CsvHistoryPanelProps) {
 
   function openEdit(entry: CsvHistoryEntry) {
     setEditEntry(entry);
-    setEditDays(storedCsvDaysToSelection(entry.csvIncludedDays));
+    setEditPeriod(periodFromEntry(entry));
     queueMicrotask(() => dialogRef.current?.showModal());
   }
 
@@ -122,14 +143,12 @@ export function CsvHistoryPanel({ historyVersion }: CsvHistoryPanelProps) {
 
   function saveEdit() {
     if (!editEntry) return;
-    if (editDays.size === 0) {
-      window.alert("Selecione pelo menos um dia do mês.");
+    const err = validatePeriod(editPeriod);
+    if (err) {
+      window.alert(`Período inválido: ${err}`);
       return;
     }
-    updateEntryIncludedDays(
-      editEntry.id,
-      [...editDays].sort((a, b) => a - b),
-    );
+    updateEntryPeriod(editEntry.id, editPeriod);
     refresh();
     closeEdit();
   }
@@ -146,8 +165,8 @@ export function CsvHistoryPanel({ historyVersion }: CsvHistoryPanelProps) {
           </h3>
           <p className="text-sm text-muted-foreground">
             Cada leitura bem-sucedida fica salva neste dispositivo. Você pode
-            baixar o arquivo de novo sem reprocessar as fotos. Editar só muda
-            quais dias entram no CSV — a leitura completa permanece guardada.
+            baixar o arquivo de novo sem reprocessar as fotos. Editar permite
+            corrigir o período de leitura associado à entrada.
           </p>
         </div>
         {entries.length > 0 && (
@@ -192,9 +211,15 @@ export function CsvHistoryPanel({ historyVersion }: CsvHistoryPanelProps) {
                     <p className="text-xs text-muted-foreground">
                       {summarizeEntry(entry)}
                     </p>
-                    <p className="text-xs text-muted-foreground">
-                      {formatCsvDaysLine(entry)}
-                    </p>
+                    {formatPeriodLine(entry) ? (
+                      <p className="text-xs text-muted-foreground">
+                        {formatPeriodLine(entry)}
+                      </p>
+                    ) : (
+                      <p className="text-xs text-muted-foreground/60 italic">
+                        Sem período registrado
+                      </p>
+                    )}
                   </div>
                   <div className="flex shrink-0 flex-wrap gap-2">
                     <Button
@@ -211,7 +236,7 @@ export function CsvHistoryPanel({ historyVersion }: CsvHistoryPanelProps) {
                       size="sm"
                       variant="outline"
                       onClick={() => openEdit(entry)}
-                      aria-label="Editar dias do CSV"
+                      aria-label="Editar período de leitura"
                     >
                       <Pencil className="size-3.5" />
                       Editar
@@ -241,21 +266,53 @@ export function CsvHistoryPanel({ historyVersion }: CsvHistoryPanelProps) {
       >
         {editEntry && (
           <div className="p-4">
-            <h4 className="text-base font-semibold">Dias no CSV</h4>
+            <h4 className="text-base font-semibold">Período de leitura</h4>
             <p className="mt-1 text-sm text-muted-foreground">
-              Defina o intervalo de dias (1–31) que entra no CSV. A leitura
-              completa do cartão permanece guardada.
+              Corrija as datas do primeiro e último dia desta leitura. O conteúdo
+              do relatório já lido permanece guardado.
             </p>
-            <CsvDayPicker
-              className="mt-4"
-              selected={editDays}
-              onSelectedChange={setEditDays}
-            />
+            <div className="mt-4 grid grid-cols-2 gap-3">
+              <div className="flex flex-col gap-1">
+                <label className="text-xs font-medium text-muted-foreground" htmlFor="edit-period-start">
+                  De
+                </label>
+                <input
+                  id="edit-period-start"
+                  type="date"
+                  value={editPeriod.start}
+                  max={editPeriod.end}
+                  onChange={(e) =>
+                    setEditPeriod((prev) => ({ ...prev, start: e.target.value }))
+                  }
+                  className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground shadow-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                />
+              </div>
+              <div className="flex flex-col gap-1">
+                <label className="text-xs font-medium text-muted-foreground" htmlFor="edit-period-end">
+                  Até
+                </label>
+                <input
+                  id="edit-period-end"
+                  type="date"
+                  value={editPeriod.end}
+                  min={editPeriod.start}
+                  onChange={(e) =>
+                    setEditPeriod((prev) => ({ ...prev, end: e.target.value }))
+                  }
+                  className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground shadow-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                />
+              </div>
+            </div>
+            {validatePeriod(editPeriod) && (
+              <p className="mt-2 text-xs text-amber-700 dark:text-amber-400">
+                {validatePeriod(editPeriod)}
+              </p>
+            )}
             <div className="mt-4 flex flex-wrap justify-end gap-2 border-t border-border/60 pt-4">
               <Button type="button" variant="outline" onClick={closeEdit}>
                 Cancelar
               </Button>
-              <Button type="button" onClick={saveEdit}>
+              <Button type="button" onClick={saveEdit} disabled={!!validatePeriod(editPeriod)}>
                 Salvar
               </Button>
             </div>

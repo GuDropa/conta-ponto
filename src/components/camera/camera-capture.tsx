@@ -24,15 +24,15 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { CsvDayPicker } from "@/components/csv/csv-day-picker";
 import { appendEntry } from "@/lib/csv-history-storage";
+import { buildHrBatchReport } from "@/lib/hr-batch-report";
 import {
-  defaultCsvDaySelection,
-  loadCsvIncludedDaysPreference,
-  saveCsvIncludedDaysPreference,
-  selectionToStoredCsvDays,
-} from "@/lib/csv-included-days-prefs";
-import { buildHrBatchReport, includedDaysArrayToSet } from "@/lib/hr-batch-report";
+  currentMonthPeriod,
+  mapDetectionsToPeriod,
+  referenceYearMonthFromPeriod,
+  validatePeriod,
+  type ReadingPeriod,
+} from "@/lib/reading-period-map";
 import {
   chunkFilesIntoPairs,
   downloadHrReportCsv,
@@ -157,10 +157,8 @@ export function CameraCapture({ onHistoryUpdated }: CameraCaptureProps) {
   const [lastResultSummary, setLastResultSummary] = useState("");
   const [previewsExpanded, setPreviewsExpanded] = useState(false);
   const [draftRecovered, setDraftRecovered] = useState(false);
-  const [csvDays, setCsvDays] = useState<Set<number>>(defaultCsvDaySelection);
-
-  const [referenceMonth, setReferenceMonth] = useState<number>(() => new Date().getMonth() + 1);
-  const [referenceYear, setReferenceYear] = useState<number>(() => new Date().getFullYear());
+  const [readingPeriod, setReadingPeriod] =
+    useState<ReadingPeriod>(currentMonthPeriod);
   const { pairs, orphan } = useMemo(
     () => buildPairGroups(images),
     [images],
@@ -188,16 +186,6 @@ export function CameraCapture({ onHistoryUpdated }: CameraCaptureProps) {
       }
     };
   }, []);
-
-  useEffect(() => {
-    setCsvDays(loadCsvIncludedDaysPreference());
-  }, []);
-
-  useEffect(() => {
-    if (csvDays.size > 0) {
-      saveCsvIncludedDaysPreference(csvDays);
-    }
-  }, [csvDays]);
 
   useEffect(() => {
     let cancelled = false;
@@ -312,6 +300,12 @@ export function CameraCapture({ onHistoryUpdated }: CameraCaptureProps) {
   async function runOcr() {
     if (images.length === 0) return;
 
+    const periodError = validatePeriod(readingPeriod);
+    if (periodError) {
+      setLastResultSummary(`Período de leitura inválido: ${periodError}`);
+      return;
+    }
+
     const files = images.map((img) => img.file);
     if (files.length < 2) {
       setLastResultSummary(
@@ -325,17 +319,6 @@ export function CameraCapture({ onHistoryUpdated }: CameraCaptureProps) {
       ? files.slice(0, files.length - 1)
       : files;
     const filePairs = chunkFilesIntoPairs(filesPaired);
-
-    if (csvDays.size === 0) {
-      setLastResultSummary(
-        "Selecione pelo menos um dia do mês (1–31) para incluir no CSV da conferência.",
-      );
-      return;
-    }
-
-    const onlyDaysForCsv = includedDaysArrayToSet(
-      selectionToStoredCsvDays(csvDays),
-    );
 
     setIsProcessing(true);
     setProgressHint("");
@@ -353,12 +336,17 @@ export function CameraCapture({ onHistoryUpdated }: CameraCaptureProps) {
         const [a, b] = filePairs[0];
         const result = await recognizeTimecardPairWithGemini(a, b);
 
+        const { detections: mappedDetections, stats } = mapDetectionsToPeriod(
+          result.detections,
+          readingPeriod,
+        );
+
         const report = buildHrBatchReport(
           [
             {
               pairIndex: 0,
               employeeName: result.employeeName,
-              detections: result.detections,
+              detections: mappedDetections,
               raw: result.raw,
             },
           ],
@@ -368,19 +356,28 @@ export function CameraCapture({ onHistoryUpdated }: CameraCaptureProps) {
         downloadHrReportCsv(
           report,
           undefined,
-          onlyDaysForCsv,
-          { referenceMonth, referenceYear },
+          null,
+          referenceYearMonthFromPeriod(readingPeriod),
         );
-        appendEntry(report, selectionToStoredCsvDays(csvDays), referenceMonth, referenceYear);
+        appendEntry(report, readingPeriod);
         onHistoryUpdated?.();
 
         const namePart = result.employeeName
           ? `Colaborador: ${result.employeeName}. `
           : "";
+        const omittedParts: string[] = [];
+        if (stats.outOfRangeCount > 0)
+          omittedParts.push(`${stats.outOfRangeCount} fora do período`);
+        if (stats.ambiguousCount > 0)
+          omittedParts.push(`${stats.ambiguousCount} ambíguo(s)`);
+        const omittedNote =
+          omittedParts.length > 0
+            ? ` (${omittedParts.join("; ")} omitido(s))`
+            : "";
         setLastResultSummary(
-          result.detections.length > 0
-            ? `${namePart}${result.detections.length} dia(s) detectados. CSV baixado e salvo no histórico — aba «Histórico» para baixar de novo.`
-            : `${namePart}Nenhum horário detectado; CSV e histórico foram gerados mesmo assim.`,
+          mappedDetections.length > 0
+            ? `${namePart}${mappedDetections.length} dia(s) detectados${omittedNote}. CSV baixado e salvo no histórico — aba «Histórico» para baixar de novo.`
+            : `${namePart}Nenhum horário detectado${omittedNote}; CSV e histórico foram gerados mesmo assim.`,
         );
         if (skippedOdd) {
           setLastResultSummary(
@@ -423,17 +420,32 @@ export function CameraCapture({ onHistoryUpdated }: CameraCaptureProps) {
       setProgressLabel(`Finalizando [${totalPairs}/${totalPairs}]`);
       setProgressHint("Gerando o relatório e o CSV…");
 
-      const { report } = batch;
+      const rawReport = batch.report;
+
+      let totalOmittedOutOfRange = 0;
+      let totalOmittedAmbiguous = 0;
+      const mappedEmployees = rawReport.employees.map((emp) => {
+        if (emp.error) return emp;
+        const { detections: mapped, stats } = mapDetectionsToPeriod(
+          emp.detections,
+          readingPeriod,
+        );
+        totalOmittedOutOfRange += stats.outOfRangeCount;
+        totalOmittedAmbiguous += stats.ambiguousCount;
+        return { ...emp, detections: mapped };
+      });
+      const report = { ...rawReport, employees: mappedEmployees };
+
       const ok = report.employees.filter((e) => !e.error).length;
       const fail = report.employees.filter((e) => e.error).length;
 
       downloadHrReportCsv(
         report,
         undefined,
-        onlyDaysForCsv,
-        { referenceMonth, referenceYear },
+        null,
+        referenceYearMonthFromPeriod(readingPeriod),
       );
-      appendEntry(report, selectionToStoredCsvDays(csvDays), referenceMonth, referenceYear);
+      appendEntry(report, readingPeriod);
       onHistoryUpdated?.();
 
       let msg = `Relatório pronto: ${ok} cartão(ões) lidos com sucesso`;
@@ -442,6 +454,13 @@ export function CameraCapture({ onHistoryUpdated }: CameraCaptureProps) {
       }
       msg +=
         ". O CSV foi baixado e guardado — aba «Histórico» para baixar de novo quando quiser.";
+      const batchOmittedParts: string[] = [];
+      if (totalOmittedOutOfRange > 0)
+        batchOmittedParts.push(`${totalOmittedOutOfRange} dia(s) fora do período`);
+      if (totalOmittedAmbiguous > 0)
+        batchOmittedParts.push(`${totalOmittedAmbiguous} dia(s) ambíguo(s)`);
+      if (batchOmittedParts.length > 0)
+        msg += ` ${batchOmittedParts.join("; ")} omitido(s) do relatório.`;
 
       if (report.skippedImageCount > 0) {
         msg += ` Há ${report.skippedImageCount} foto(s) sem par (não foram enviadas).`;
@@ -461,7 +480,7 @@ export function CameraCapture({ onHistoryUpdated }: CameraCaptureProps) {
   }
 
   const canRun =
-    totalPhotos >= 2 && !isProcessing && csvDays.size > 0;
+    totalPhotos >= 2 && !isProcessing && !validatePeriod(readingPeriod);
 
   return (
     <section className="space-y-4">
@@ -547,43 +566,60 @@ export function CameraCapture({ onHistoryUpdated }: CameraCaptureProps) {
         </Button>
       </div>
 
-      <div className="rounded-xl border border-border/80 bg-muted/25 p-3">
-        <p className="mb-2 text-sm font-medium text-foreground">
-          Mês de referência
-        </p>
-        <p className="mb-3 text-xs text-muted-foreground">
-          Usado nas colunas Data, Mês e Ano do CSV gerado.
-        </p>
-        <input
-          type="month"
-          disabled={isProcessing}
-          value={`${referenceYear}-${String(referenceMonth).padStart(2, "0")}`}
-          onChange={(e) => {
-            const [y, m] = e.target.value.split("-").map(Number);
-            if (y && m) {
-              setReferenceYear(y);
-              setReferenceMonth(m);
-            }
-          }}
-          className="h-9 w-full rounded-md border border-input bg-background px-3 py-1 text-sm shadow-sm focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
-        />
-      </div>
-
-      <div className="rounded-xl border border-border/80 bg-muted/25 p-3">
-        <p className="mb-2 text-sm font-medium text-foreground">
-          Intervalo no CSV (conferência)
-        </p>
-        <p className="mb-3 text-xs text-muted-foreground">
-          Só o exportado respeita o intervalo; a leitura do cartão segue inteira.
-        </p>
-        <CsvDayPicker
-          selected={csvDays}
-          onSelectedChange={setCsvDays}
-          disabled={isProcessing}
-        />
-        {csvDays.size === 0 && (
-          <p className="mt-2 text-xs text-amber-700 dark:text-amber-400">
-            Selecione ao menos um dia para poder processar.
+      <div className="rounded-xl border border-border/80 bg-muted/25 p-3 space-y-3">
+        <div>
+          <p className="mb-0.5 text-sm font-medium text-foreground">
+            Período desta leitura
+          </p>
+          <p className="text-xs text-muted-foreground">
+            Primeiro e último dia que entram nesta fotografia do cartão. Use datas
+            de meses diferentes quando a contagem cruzar o fim do mês (ex.: 29/04 a
+            03/05).
+          </p>
+        </div>
+        <div className="grid grid-cols-2 gap-2">
+          <div className="flex flex-col gap-1">
+            <label
+              className="text-xs font-medium text-muted-foreground"
+              htmlFor="period-start"
+            >
+              De
+            </label>
+            <input
+              id="period-start"
+              type="date"
+              value={readingPeriod.start}
+              max={readingPeriod.end}
+              disabled={isProcessing}
+              onChange={(e) =>
+                setReadingPeriod((prev) => ({ ...prev, start: e.target.value }))
+              }
+              className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground shadow-sm focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-50"
+            />
+          </div>
+          <div className="flex flex-col gap-1">
+            <label
+              className="text-xs font-medium text-muted-foreground"
+              htmlFor="period-end"
+            >
+              Até
+            </label>
+            <input
+              id="period-end"
+              type="date"
+              value={readingPeriod.end}
+              min={readingPeriod.start}
+              disabled={isProcessing}
+              onChange={(e) =>
+                setReadingPeriod((prev) => ({ ...prev, end: e.target.value }))
+              }
+              className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground shadow-sm focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-50"
+            />
+          </div>
+        </div>
+        {validatePeriod(readingPeriod) && (
+          <p className="text-xs text-amber-700 dark:text-amber-400">
+            {validatePeriod(readingPeriod)}
           </p>
         )}
       </div>

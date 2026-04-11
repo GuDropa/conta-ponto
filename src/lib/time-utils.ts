@@ -56,10 +56,56 @@ export function minutesToDecimalHours(totalMinutes: number): number {
 function diffInMinutes(start: string, end: string): number {
   const startMinutes = timeStringToMinutes(start);
   const endMinutes = timeStringToMinutes(end);
-  if (startMinutes === null || endMinutes === null || endMinutes < startMinutes) {
+  if (startMinutes === null || endMinutes === null) {
     return 0;
   }
+  if (endMinutes < startMinutes) {
+    // Turno que cruza meia-noite: ex. 23:00–02:00 = (1440 - 23*60) + 2*60
+    return 1440 - startMinutes + endMinutes;
+  }
   return endMinutes - startMinutes;
+}
+
+const NIGHT_START = 22 * 60; // 22:00 em minutos
+const NIGHT_END = 6 * 60;    // 06:00 em minutos
+
+/**
+ * Minutos noturnos (22:00–06:00) de um único par entrada/saída.
+ * Trata corretamente turnos que cruzam meia-noite (exit < entry).
+ */
+export function nightWorkedMinutesForSegment(entry: string, exit: string): number {
+  const start = timeStringToMinutes(entry);
+  const end = timeStringToMinutes(exit);
+  if (start === null || end === null) return 0;
+
+  // Sobreposição de [a, b) com a janela noturna [22:00, 24:00) ∪ [00:00, 06:00)
+  function overlapWithNight(a: number, b: number): number {
+    if (a >= b) return 0;
+    // Faixa [22:00, 24:00)
+    const overlapEvening = Math.max(0, Math.min(b, 1440) - Math.max(a, NIGHT_START));
+    // Faixa [00:00, 06:00)
+    const overlapMorning = Math.max(0, Math.min(b, NIGHT_END) - Math.max(a, 0));
+    return overlapEvening + overlapMorning;
+  }
+
+  if (end >= start) {
+    // Turno dentro do mesmo dia civil
+    return overlapWithNight(start, end);
+  } else {
+    // Turno que cruza meia-noite: [start, 24:00) ∪ [00:00, end)
+    return overlapWithNight(start, 1440) + overlapWithNight(0, end);
+  }
+}
+
+type WorkedFieldsForNight = Pick<Parameters<typeof calculateWorkedMinutes>[0],
+  "entry1" | "exit1" | "entry2" | "exit2" | "extraEntry" | "extraExit">;
+
+export function calculateNightWorkedMinutes(row: WorkedFieldsForNight): number {
+  return (
+    nightWorkedMinutesForSegment(row.entry1 ?? "", row.exit1 ?? "") +
+    nightWorkedMinutesForSegment(row.entry2 ?? "", row.exit2 ?? "") +
+    nightWorkedMinutesForSegment(row.extraEntry ?? "", row.extraExit ?? "")
+  );
 }
 
 type WorkedFields = Pick<TimecardRow, "entry1" | "exit1" | "entry2" | "exit2" | "extraEntry" | "extraExit">;

@@ -1,5 +1,6 @@
-import { summarizeWorkedTime } from "@/lib/time-utils";
+import { summarizeWorkedTime, calculateNightWorkedMinutes, minutesToTimeString } from "@/lib/time-utils";
 import type { DetectedDayTimes } from "@/lib/ocr-timecard-parser";
+import { formatLocalIso } from "@/lib/reading-period-map";
 
 export type HrBatchEmployeeResult = {
   pairIndex: number;
@@ -114,13 +115,12 @@ export type BuildHrReportCsvOptions = {
   /** `null`/`undefined` = todos os dias; `Set` vazio = sem linhas de calendário */
   onlyDays?: Set<number> | null;
   /**
-   * Mês de referência (1–12) para compor a coluna Data e Mês.
-   * Quando ausente, usa o mês atual no momento da geração.
+   * Mês (1–12) para linhas sem `calendarDate` no detection.
+   * Em geral derivado do primeiro dia do período de leitura; se ausente, mês atual.
    */
   referenceMonth?: number;
   /**
-   * Ano de referência (ex.: 2026) para compor a coluna Data e Ano.
-   * Quando ausente, usa o ano atual no momento da geração.
+   * Ano para linhas sem `calendarDate`. Em geral derivado do período; se ausente, ano atual.
    */
   referenceYear?: number;
 };
@@ -172,7 +172,15 @@ export function buildHrReportCsv(
       continue;
     }
 
-    for (const detection of emp.detections) {
+    const sortedDetections = [...emp.detections].sort((a, b) => {
+      const keyA =
+        a.calendarDate ?? `0000-00-${String(a.day).padStart(2, "0")}`;
+      const keyB =
+        b.calendarDate ?? `0000-00-${String(b.day).padStart(2, "0")}`;
+      return keyA.localeCompare(keyB);
+    });
+
+    for (const detection of sortedDetections) {
       const v = detection.values;
       const workedFields = {
         entry1: v.entry1 ?? "",
@@ -183,25 +191,32 @@ export function buildHrReportCsv(
         extraExit: v.extraExit ?? "",
       };
       const total = summarizeWorkedTime(workedFields).hhmm;
-      const data = `${detection.day}/${refMonth}/${refYear}`;
+      const nightTotal = minutesToTimeString(calculateNightWorkedMinutes(workedFields));
+      const data = detection.calendarDate
+        ? formatLocalIso(detection.calendarDate)
+        : `${detection.day}/${refMonth}/${refYear}`;
 
       const row = [
-        data,                                    // Data
-        escapeCsvField(emp.employeeName || ""),  // Nome
-        "",                                      // Setor (fórmula)
-        escapeCsvField(v.entry1 ?? ""),          // Entrada
-        escapeCsvField(v.exit1 ?? ""),           // Saida
-        escapeCsvField(v.entry2 ?? ""),          // Retorno
-        escapeCsvField(v.exit2 ?? ""),           // Saida2
-        total,                                   // Total
-        "",                                      // Valor Hora (fórmula)
-        "",                                      // Total a Receber (fórmula)
-        "",                                      // Total Hora Adc Noturno
-        "",                                      // Valor Prêmio Produção
-        "",                                      // Valor Extra
-        String(detection.day),                   // Dia
-        String(refMonth),                        // Mês
-        String(refYear),                         // Ano
+        data, // Data
+        escapeCsvField(emp.employeeName || ""), // Nome
+        "", // Setor (fórmula)
+        escapeCsvField(v.entry1 ?? ""), // Entrada
+        escapeCsvField(v.exit1 ?? ""), // Saida
+        escapeCsvField(v.entry2 ?? ""), // Retorno
+        escapeCsvField(v.exit2 ?? ""), // Saida2
+        total, // Total
+        "", // Valor Hora (fórmula)
+        "", // Total a Receber (fórmula)
+        nightTotal, // Total Hora Adc Noturno
+        "", // Valor Prêmio Produção
+        "", // Valor Extra
+        String(detection.day), // Dia
+        detection.calendarDate
+          ? String(Number(detection.calendarDate.split("-")[1]))
+          : String(refMonth), // Mês
+        detection.calendarDate
+          ? detection.calendarDate.split("-")[0]
+          : String(refYear), // Ano
       ];
       lines.push(row.join(sep));
     }

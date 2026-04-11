@@ -1,8 +1,5 @@
-import {
-  ALL_CSV_DAYS,
-  type HrBatchReport,
-  parseIncludedDaysList,
-} from "@/lib/hr-batch-report";
+import type { HrBatchReport } from "@/lib/hr-batch-report";
+import type { ReadingPeriod } from "@/lib/reading-period-map";
 
 export const CSV_HISTORY_STORAGE_KEY = "conta-ponto:csv-history";
 
@@ -13,12 +10,11 @@ export type CsvHistoryEntry = {
   id: string;
   createdAt: string;
   report: HrBatchReport;
-  /** Dias 1–31 incluídos no CSV; ausente ou null = todos. */
+  /** @deprecated Substituído pelo período De/Até. Mantido para compatibilidade com entradas antigas. */
   csvIncludedDays?: number[] | null;
-  /** Mês de referência (1–12) para compor a coluna Data no CSV. */
-  referenceMonth?: number;
-  /** Ano de referência para compor a coluna Data no CSV. */
-  referenceYear?: number;
+  /** Período de leitura informado no momento da captura (YYYY-MM-DD). */
+  readingPeriodStart?: string;
+  readingPeriodEnd?: string;
 };
 
 /**
@@ -32,19 +28,6 @@ export function sanitizeReportForStorage(report: HrBatchReport): HrBatchReport {
       raw: "",
     })),
   };
-}
-
-function normalizeStoredDays(days: number[] | null | undefined): number[] | null {
-  if (days == null || days.length === 0) return null;
-  const parsed = parseIncludedDaysList(days);
-  if (parsed.length === 0) return null;
-  if (
-    parsed.length === ALL_CSV_DAYS.length &&
-    ALL_CSV_DAYS.every((d) => parsed.includes(d))
-  ) {
-    return null;
-  }
-  return parsed;
 }
 
 function parseStored(raw: string | null): CsvHistoryEntry[] {
@@ -80,9 +63,9 @@ function saveHistory(entries: CsvHistoryEntry[]) {
  */
 export function appendEntry(
   report: HrBatchReport,
+  readingPeriod?: ReadingPeriod,
+  /** Subconjunto de dias do cartão (1–31) no CSV; `null` = todos. */
   csvIncludedDays?: number[] | null,
-  referenceMonth?: number,
-  referenceYear?: number,
 ): CsvHistoryEntry {
   const entry: CsvHistoryEntry = {
     id:
@@ -91,9 +74,12 @@ export function appendEntry(
         : `${Date.now()}-${Math.random().toString(36).slice(2)}`,
     createdAt: new Date().toISOString(),
     report: sanitizeReportForStorage(report),
-    csvIncludedDays: normalizeStoredDays(csvIncludedDays ?? null),
-    ...(referenceMonth != null ? { referenceMonth } : {}),
-    ...(referenceYear != null ? { referenceYear } : {}),
+    ...(readingPeriod
+      ? { readingPeriodStart: readingPeriod.start, readingPeriodEnd: readingPeriod.end }
+      : {}),
+    ...(csvIncludedDays != null && csvIncludedDays.length > 0
+      ? { csvIncludedDays }
+      : {}),
   };
   const list = loadHistory();
   const next = [entry, ...list].slice(0, MAX_HISTORY_ENTRIES);
@@ -101,10 +87,11 @@ export function appendEntry(
   return entry;
 }
 
-export function updateEntryIncludedDays(id: string, csvIncludedDays: number[]) {
-  const normalized = normalizeStoredDays(csvIncludedDays);
+export function updateEntryPeriod(id: string, period: ReadingPeriod) {
   const list = loadHistory().map((e) =>
-    e.id === id ? { ...e, csvIncludedDays: normalized } : e,
+    e.id === id
+      ? { ...e, readingPeriodStart: period.start, readingPeriodEnd: period.end }
+      : e,
   );
   saveHistory(list);
 }

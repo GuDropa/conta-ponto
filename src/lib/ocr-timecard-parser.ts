@@ -27,6 +27,8 @@ type DayMarker = {
 export type DetectedDayTimes = {
   day: number;
   values: Partial<Record<TimeField, string>>;
+  /** ISO date YYYY-MM-DD (local) — set after period mapping; absent when no period is provided. */
+  calendarDate?: string;
 };
 
 const COLUMN_ORDER: TimeField[] = [
