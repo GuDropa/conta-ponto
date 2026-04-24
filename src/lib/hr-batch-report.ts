@@ -19,7 +19,7 @@ export type HrBatchReport = {
 /** Dias 1–31 válidos para filtro de CSV (conferência). */
 export const ALL_CSV_DAYS = Array.from({ length: 31 }, (_, i) => i + 1);
 
-const CSV_HEADER = [
+export const HR_REPORT_HEADER = [
   "Data",
   "Nome",
   "Setor",
@@ -37,6 +37,8 @@ const CSV_HEADER = [
   "Mês",
   "Ano",
 ] as const;
+
+const CSV_HEADER = HR_REPORT_HEADER;
 
 /**
  * Valida e deduplica dias (1–31); retorna array ordenado.
@@ -126,18 +128,14 @@ export type BuildHrReportCsvOptions = {
 };
 
 /**
- * Gera CSV (UTF-8 com BOM) compatível com Excel em PT-BR, no padrão da
- * planilha central de ponto. Separador: vírgula.
- * O filtro `onlyDays` aplica-se só à exportação; não altera o `report` passado.
- * Colunas Setor, Valor Hora e Total a Receber são deixadas vazias para
- * preenchimento por fórmula na planilha de destino.
+ * Linhas cruas (mesma ordem que CSV/XLSX). `onlyDays` só filtra exportação.
+ * Colunas Setor, Valor Hora, Total a Receber vazias p/ fórmulas no destino.
  */
-export function buildHrReportCsv(
+export function buildHrReportRows(
   report: HrBatchReport,
   options?: BuildHrReportCsvOptions,
-): string {
+): string[][] {
   const working = filterReportDays(report, options?.onlyDays);
-  const sep = ",";
 
   const now = new Date();
   const refMonth =
@@ -153,22 +151,20 @@ export function buildHrReportCsv(
 
   const EMPTY_ROW = Array<string>(CSV_HEADER.length).fill("");
 
-  const lines: string[] = [CSV_HEADER.join(sep)];
+  const rows: string[][] = [[...CSV_HEADER]];
 
   for (const emp of working.employees) {
     if (emp.error) {
       const row = [...EMPTY_ROW];
-      row[1] = escapeCsvField(
-        `${emp.employeeName || "?"} — ERRO: ${emp.error}`,
-      );
-      lines.push(row.join(sep));
+      row[1] = `${emp.employeeName || "?"} — ERRO: ${emp.error}`;
+      rows.push(row);
       continue;
     }
 
     if (emp.detections.length === 0) {
       const row = [...EMPTY_ROW];
-      row[1] = escapeCsvField(emp.employeeName || "");
-      lines.push(row.join(sep));
+      row[1] = emp.employeeName || "";
+      rows.push(row);
       continue;
     }
 
@@ -196,46 +192,55 @@ export function buildHrReportCsv(
         ? formatLocalIso(detection.calendarDate)
         : `${detection.day}/${refMonth}/${refYear}`;
 
-      const row = [
-        data, // Data
-        escapeCsvField(emp.employeeName || ""), // Nome
-        "", // Setor (fórmula)
-        escapeCsvField(v.entry1 ?? ""), // Entrada
-        escapeCsvField(v.exit1 ?? ""), // Saida
-        escapeCsvField(v.entry2 ?? ""), // Retorno
-        escapeCsvField(v.exit2 ?? ""), // Saida2
-        total, // Total
-        "", // Valor Hora (fórmula)
-        "", // Total a Receber (fórmula)
-        nightTotal, // Total Hora Adc Noturno
-        "", // Valor Prêmio Produção
-        "", // Valor Extra
-        String(detection.day), // Dia
+      const row: string[] = [
+        data,
+        emp.employeeName || "",
+        "",
+        v.entry1 ?? "",
+        v.exit1 ?? "",
+        v.entry2 ?? "",
+        v.exit2 ?? "",
+        total,
+        "",
+        "",
+        nightTotal,
+        "",
+        "",
+        String(detection.day),
         detection.calendarDate
           ? String(Number(detection.calendarDate.split("-")[1]))
-          : String(refMonth), // Mês
+          : String(refMonth),
         detection.calendarDate
           ? detection.calendarDate.split("-")[0]
-          : String(refYear), // Ano
+          : String(refYear),
       ];
-      lines.push(row.join(sep));
+      rows.push(row);
     }
   }
 
   if (working.skippedImageCount > 0) {
-    lines.push("");
-    lines.push(
-      [
-        "",
-        escapeCsvField(
-          `AVISO: ${working.skippedImageCount} imagem(ns) sem par (não processadas).`,
-        ),
-        ...Array(CSV_HEADER.length - 2).fill(""),
-      ].join(sep),
-    );
+    rows.push(Array(CSV_HEADER.length).fill(""));
+    const aviso = [...EMPTY_ROW];
+    aviso[1] = `AVISO: ${working.skippedImageCount} imagem(ns) sem par (não processadas).`;
+    rows.push(aviso);
   }
 
-  return "\uFEFF" + lines.join("\r\n");
+  return rows;
+}
+
+/**
+ * Gera CSV (UTF-8 com BOM) — legado; export principal agora é XLSX.
+ */
+export function buildHrReportCsv(
+  report: HrBatchReport,
+  options?: BuildHrReportCsvOptions,
+): string {
+  const sep = ",";
+  const rows = buildHrReportRows(report, options);
+  return (
+    "\uFEFF" +
+    rows.map((r) => r.map((c) => escapeCsvField(c)).join(sep)).join("\r\n")
+  );
 }
 
 function escapeCsvField(value: string): string {

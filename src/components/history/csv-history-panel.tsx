@@ -18,7 +18,7 @@ import {
   updateEntryPeriod,
   type CsvHistoryEntry,
 } from "@/lib/csv-history-storage";
-import { downloadHrReportCsv } from "@/lib/gemini-ocr-client";
+import { downloadHrReportXlsx } from "@/lib/gemini-ocr-client";
 import { includedDaysArrayToSet } from "@/lib/hr-batch-report";
 import {
   currentMonthPeriod,
@@ -63,7 +63,7 @@ function filenameForEntry(entry: CsvHistoryEntry) {
   const d = new Date(entry.createdAt);
   const pad = (n: number) => String(n).padStart(2, "0");
   const stamp = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
-  return `relatorio-ponto-rh-${stamp}.csv`;
+  return `relatorio-ponto-rh-${stamp}.xlsx`;
 }
 
 function periodFromEntry(entry: CsvHistoryEntry): ReadingPeriod {
@@ -105,7 +105,7 @@ export function CsvHistoryPanel({ historyVersion }: CsvHistoryPanelProps) {
       report = { ...report, employees };
     }
 
-    downloadHrReportCsv(
+    downloadHrReportXlsx(
       report,
       filenameForEntry(entry),
       includedDaysArrayToSet(entry.csvIncludedDays ?? null),
@@ -122,7 +122,7 @@ export function CsvHistoryPanel({ historyVersion }: CsvHistoryPanelProps) {
     if (entries.length === 0) return;
     if (
       typeof window !== "undefined" &&
-      !window.confirm("Apagar todo o histórico de CSV neste aparelho?")
+      !window.confirm("Apagar todo o histórico de planilhas neste aparelho?")
     ) {
       return;
     }
@@ -161,7 +161,7 @@ export function CsvHistoryPanel({ historyVersion }: CsvHistoryPanelProps) {
             id="csv-history-heading"
             className="text-base font-semibold text-foreground"
           >
-            Histórico de relatórios CSV
+            Histórico de relatórios
           </h3>
           <p className="text-sm text-muted-foreground">
             Cada leitura bem-sucedida fica salva neste dispositivo. Você pode
@@ -193,8 +193,8 @@ export function CsvHistoryPanel({ historyVersion }: CsvHistoryPanelProps) {
               </CardTitle>
             </div>
             <CardDescription>
-              Na aba «Importar cartões», processe as fotos. O CSV será baixado e
-              aparecerá aqui para download posterior.
+              Na aba «Importar cartões», processe as fotos. A planilha Excel
+              (.xlsx) será baixada e aparecerá aqui para download posterior.
             </CardDescription>
           </CardHeader>
         </Card>
@@ -229,7 +229,7 @@ export function CsvHistoryPanel({ historyVersion }: CsvHistoryPanelProps) {
                       onClick={() => handleDownload(entry)}
                     >
                       <FileDown className="size-3.5" />
-                      Baixar CSV
+                      Baixar planilha
                     </Button>
                     <Button
                       type="button"

@@ -1,11 +1,11 @@
 import type { DetectedDayTimes } from "@/lib/ocr-timecard-parser";
 import {
   buildHrBatchReport,
-  buildHrReportCsv,
   type BuildHrReportCsvOptions,
   type HrBatchEmployeeResult,
   type HrBatchReport,
 } from "@/lib/hr-batch-report";
+import { hrReportToXlsxBlob } from "@/lib/hr-report-xlsx";
 
 const MAX_DIMENSION = 1600;
 const JPEG_QUALITY = 0.85;
@@ -198,18 +198,17 @@ export async function recognizeTimecardBatchWithGemini(
   return { report };
 }
 
-export function downloadHrReportCsv(
+export function downloadHrReportXlsx(
   report: HrBatchReport,
   filename?: string,
   onlyDays?: Set<number> | null,
   options?: Pick<BuildHrReportCsvOptions, "referenceMonth" | "referenceYear">,
 ) {
-  const csv = buildHrReportCsv(report, { onlyDays, ...options });
-  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+  const blob = hrReportToXlsxBlob(report, { onlyDays, ...options });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = filename ?? `relatorio-ponto-rh-${formatDateFile()}.csv`;
+  a.download = filename ?? `relatorio-ponto-rh-${formatDateFile()}.xlsx`;
   a.click();
   URL.revokeObjectURL(url);
 }

@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "generatedAt": "2026-04-14T00:00:00.000Z",
+  "source": "manual",
+  "stack": {
+    "primaryLanguage": "typescript",
+    "languages": ["javascript", "typescript"],
+    "frameworks": ["nextjs"],
+    "buildTools": ["next"],
+    "testFrameworks": [],
+    "packageManager": "npm"
+  },
+  "sensors": [
+    {
+      "id": "lint",
+      "name": "Lint",
+      "description": "ESLint (eslint-config-next)",
+      "severity": "warning",
+      "command": "npm run lint",
+      "script": "lint"
+    },
+    {
+      "id": "build",
+      "name": "Build",
+      "description": "Next.js production build",
+      "severity": "critical",
+      "command": "npm run build",
+      "script": "build"
+    }
+  ]
+}

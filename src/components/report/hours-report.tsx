@@ -8,6 +8,7 @@ import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { useBeforeUnloadWhen } from "@/hooks/use-before-unload-warning";
 import { TIMECARD_STORAGE_KEY } from "@/lib/timecard-defaults";
+import { aoaToXlsxBlob } from "@/lib/hr-report-xlsx";
 import {
   calculateMonthlySummary,
   summarizeWorkedTime,
@@ -142,37 +143,40 @@ export function HoursReport() {
     }
   }
 
-  function downloadCsv() {
-    const header = "Dia;Entrada 1;Saida 1;Entrada 2;Saida 2;Entrada Extra;Saida Extra;Horas Trabalhadas";
-    const lines = workedDays.map(({ row, summary }) =>
-      [
-        row.dayLabel,
-        row.entry1,
-        row.exit1,
-        row.entry2,
-        row.exit2,
-        row.extraEntry,
-        row.extraExit,
-        summary.hhmm,
-      ].join(";"),
-    );
-
-    const footer = [
-      "",
-      `Total de Horas;${monthlySummary.hhmm}`,
-      `Dias Trabalhados;${workedDays.length}`,
-      `Colaborador;${employeeName}`,
-      `Periodo;${MONTHS[selectedMonth]} de ${selectedYear}`,
+  function downloadXlsx() {
+    const header = [
+      "Dia",
+      "Entrada 1",
+      "Saida 1",
+      "Entrada 2",
+      "Saida 2",
+      "Entrada Extra",
+      "Saida Extra",
+      "Horas Trabalhadas",
     ];
-
-    const bom = "\uFEFF";
-    const csv = bom + [header, ...lines, ...footer].join("\r\n");
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const dataRows: (string | number)[][] = workedDays.map(({ row, summary }) => [
+      row.dayLabel,
+      row.entry1,
+      row.exit1,
+      row.entry2,
+      row.exit2,
+      row.extraEntry,
+      row.extraExit,
+      summary.hhmm,
+    ]);
+    const footer: (string | number)[][] = [
+      [],
+      ["Total de Horas", monthlySummary.hhmm],
+      ["Dias Trabalhados", String(workedDays.length)],
+      ["Colaborador", employeeName],
+      ["Periodo", `${MONTHS[selectedMonth]} de ${selectedYear}`],
+    ];
+    const rows = [header, ...dataRows, ...footer];
+    const blob = aoaToXlsxBlob(rows, "Relatorio");
     const url = URL.createObjectURL(blob);
-
     const link = document.createElement("a");
     link.href = url;
-    link.download = `relatorio-horas-${MONTHS[selectedMonth].toLowerCase()}-${selectedYear}.csv`;
+    link.download = `relatorio-horas-${MONTHS[selectedMonth].toLowerCase()}-${selectedYear}.xlsx`;
     link.click();
     URL.revokeObjectURL(url);
   }
@@ -444,11 +448,11 @@ export function HoursReport() {
           size="lg"
           variant="secondary"
           className="col-span-2 w-full"
-          onClick={downloadCsv}
+          onClick={downloadXlsx}
           disabled={workedDays.length === 0}
         >
           <FileSpreadsheet className="size-5" />
-          Exportar CSV
+          Exportar Excel
         </Button>
       </div>
 

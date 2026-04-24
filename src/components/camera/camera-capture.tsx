@@ -35,7 +35,7 @@ import {
 } from "@/lib/reading-period-map";
 import {
   chunkFilesIntoPairs,
-  downloadHrReportCsv,
+  downloadHrReportXlsx,
   recognizeTimecardBatchWithGemini,
   recognizeTimecardPairWithGemini,
 } from "@/lib/gemini-ocr-client";
@@ -293,8 +293,8 @@ export function CameraCapture({ onHistoryUpdated }: CameraCaptureProps) {
 
   const ctaLabel = useMemo(() => {
     if (completePairs <= 0) return "Processar";
-    if (completePairs === 1) return "Ler 1 cartão e gerar CSV";
-    return `Gerar CSV — ${completePairs} funcionários`;
+    if (completePairs === 1) return "Ler 1 cartão e gerar planilha";
+    return `Gerar planilha — ${completePairs} funcionários`;
   }, [completePairs]);
 
   async function runOcr() {
@@ -353,7 +353,7 @@ export function CameraCapture({ onHistoryUpdated }: CameraCaptureProps) {
           skippedOdd ? 1 : 0,
         );
 
-        downloadHrReportCsv(
+        downloadHrReportXlsx(
           report,
           undefined,
           null,
@@ -376,8 +376,8 @@ export function CameraCapture({ onHistoryUpdated }: CameraCaptureProps) {
             : "";
         setLastResultSummary(
           mappedDetections.length > 0
-            ? `${namePart}${mappedDetections.length} dia(s) detectados${omittedNote}. CSV baixado e salvo no histórico — aba «Histórico» para baixar de novo.`
-            : `${namePart}Nenhum horário detectado${omittedNote}; CSV e histórico foram gerados mesmo assim.`,
+            ? `${namePart}${mappedDetections.length} dia(s) detectados${omittedNote}. Planilha Excel baixada e salva no histórico — aba «Histórico» para baixar de novo.`
+            : `${namePart}Nenhum horário detectado${omittedNote}; planilha e histórico foram gerados mesmo assim.`,
         );
         if (skippedOdd) {
           setLastResultSummary(
@@ -418,7 +418,7 @@ export function CameraCapture({ onHistoryUpdated }: CameraCaptureProps) {
 
       clearBatchProgressTicker();
       setProgressLabel(`Finalizando [${totalPairs}/${totalPairs}]`);
-      setProgressHint("Gerando o relatório e o CSV…");
+      setProgressHint("Gerando o relatório e a planilha…");
 
       const rawReport = batch.report;
 
@@ -439,7 +439,7 @@ export function CameraCapture({ onHistoryUpdated }: CameraCaptureProps) {
       const ok = report.employees.filter((e) => !e.error).length;
       const fail = report.employees.filter((e) => e.error).length;
 
-      downloadHrReportCsv(
+      downloadHrReportXlsx(
         report,
         undefined,
         null,
@@ -450,10 +450,10 @@ export function CameraCapture({ onHistoryUpdated }: CameraCaptureProps) {
 
       let msg = `Relatório pronto: ${ok} cartão(ões) lidos com sucesso`;
       if (fail > 0) {
-        msg += `; ${fail} com erro (nome do colaborador indica o problema no CSV)`;
+        msg += `; ${fail} com erro (nome do colaborador indica o problema na planilha)`;
       }
       msg +=
-        ". O CSV foi baixado e guardado — aba «Histórico» para baixar de novo quando quiser.";
+        ". A planilha foi baixada e guardada — aba «Histórico» para baixar de novo quando quiser.";
       const batchOmittedParts: string[] = [];
       if (totalOmittedOutOfRange > 0)
         batchOmittedParts.push(`${totalOmittedOutOfRange} dia(s) fora do período`);
