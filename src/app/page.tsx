@@ -1,6 +1,6 @@
 import Image from "next/image";
 import Link from "next/link";
-import { ClipboardList, Clock, ChevronRight } from "lucide-react";
+import { ClipboardList, Clock, ChevronRight, PackagePlus } from "lucide-react";
 
 export default function Home() {
   return (
@@ -58,6 +58,23 @@ export default function Home() {
               <h2 className="text-lg font-bold leading-tight">Check de Gôndolas</h2>
               <p className="text-sm text-muted-foreground">
                 Verificação de produtos nas prateleiras
+              </p>
+            </div>
+            <ChevronRight className="h-5 w-5 shrink-0 text-muted-foreground" />
+          </Link>
+
+          {/* Card Solicita Insumos */}
+          <Link
+            href="/solicita-insumos"
+            className="flex min-h-[88px] items-center gap-4 rounded-2xl bg-card px-5 py-5 shadow-sm active:scale-95 active:bg-muted"
+          >
+            <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-unimax-blue/10">
+              <PackagePlus className="h-7 w-7 text-unimax-blue" />
+            </div>
+            <div className="flex-1 space-y-0.5">
+              <h2 className="text-lg font-bold leading-tight">Solicita Insumos</h2>
+              <p className="text-sm text-muted-foreground">
+                Solicitação de insumos por setor
               </p>
             </div>
             <ChevronRight className="h-5 w-5 shrink-0 text-muted-foreground" />
