@@ -17,12 +17,12 @@ export const viewport: Viewport = {
 };
 
 export const metadata: Metadata = {
-  title: "Conta Ponto | Unimax",
-  description: "Registro e controle de ponto — Supermercado Unimax",
+  title: "Ferramentas Unimax",
+  description: "Ferramentas internas — Supermercado Unimax",
   appleWebApp: {
     capable: true,
     statusBarStyle: "black-translucent",
-    title: "Conta Ponto",
+    title: "Unimax",
   },
 };
 
