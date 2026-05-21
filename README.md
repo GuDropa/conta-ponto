@@ -1,59 +1,65 @@
 # Conta Ponto — Supermercado Unimax
 
-Sistema mobile-first para registro e controle de ponto dos colaboradores do Supermercado Unimax (Guarapuava — PR).
+Sistema **mobile-first** (com layout também pensado para desktop) para registro e conferência de ponto dos colaboradores do Supermercado Unimax (Guarapuava — PR).
 
-O app permite fotografar o cartao de ponto mecanico, extrair os horarios automaticamente via OCR e gerar um relatorio oficial de horas trabalhadas no mes.
+O fluxo principal usa **duas fotos por colaborador** (frente e verso do cartão de ponto mecânico), **OCR com IA no servidor** (Gemini Vision; cadeia opcional com **Anthropic** se configurada), gera **CSV e planilha Excel (.xlsx)** para o RH e mantém **histórico local** para baixar de novo sem reprocessar. A página **Relatório** concentra a emissão do documento visual de horas (imagem) e exportação em **PNG**, **.xlsx** e compartilhamento.
 
 ## Documentação (apresentação para RH e liderança)
 
-Veja a documentação completa em `docs/DOCUMENTACAO.md`.
+Documentação completa do processo, limites e manual do RH: `docs/DOCUMENTACAO.md`.
+
+Contexto de desenvolvimento (mapa do repositório, visão geral): `.context/docs/project-overview.md` e `.context/docs/README.md`.
 
 ## Funcionalidades
 
-### Leitura de cartao de ponto (OCR)
+### Leitura de cartão de ponto (OCR)
 
-- Tire uma foto do cartao de ponto diretamente pelo celular ou carregue imagens da galeria
-- O sistema envia as imagens para o **Gemini Vision** (Google AI), que identifica os horarios carimbados mecanicamente
-- Suporte a todas as 6 colunas do cartao: Entrada/Saida Manha, Entrada/Saida Tarde e Entrada/Saida Extra
-- Os horarios detectados sao preenchidos automaticamente na tabela
+- **Par frente + verso**: o envio considera pares consecutivos de imagens (1–2, 3–4, …) por colaborador; fotos ímpar sem par são mantidas como aviso até fechar o par
+- **Câmera ou galeria** no celular; processamento no servidor via **`POST /api/ocr`**
+- **Provedor principal**: **Google Gemini Vision**; se existir `ANTHROPIC_API_KEY`, a cadeia pode usar **Anthropic** como reforço (ver `.env` abaixo)
+- **Intervalo de dias (1–31)**: filtra o que entra no CSV/planilha, sem alterar a leitura feita pela IA; preferência salva no aparelho
+- **Lote**: vários colaboradores em sequência, com processamento **paralelo** no servidor e resiliência (falha em um par não bloqueia os demais; mensagens de erro no export)
+- **Barra de progresso e avisos** durante o processamento
+- Rascunho de fotos pendentes em **IndexedDB** para reduzir perda ao recarregar
 
-### Controle de horas
+### Histórico de exportações (RH)
 
-- Tabela mensal com os 31 dias mostrando as horas trabalhadas por dia (formato HH:MM)
-- Total mensal acumulado em destaque
-- Dados persistidos no navegador via LocalStorage (nao perde ao fechar o app)
-- Botao para limpar todas as horas registradas
+- Armazenamento local dos relatórios gerados
+- Re-download de **CSV**, ajuste do intervalo de dias por leitura, exclusão e limpeza do histórico
 
-### Emissao de relatorio
+### Página Relatório (`/relatorio`)
 
-- Formulario para informar nome do colaborador, mes e ano
-- Gera um documento visual com a identidade do Unimax contendo:
-  - Total de horas e dias trabalhados
-  - Detalhamento diario
-  - Data/hora de emissao
-  - Espaco para assinatura
-- **Compartilhar** — envia a imagem do relatorio diretamente por WhatsApp, email, etc. (via Web Share API)
-- **Salvar imagem** — baixa o relatorio como PNG em alta resolucao
+- Formulário com nome, mês e ano; totais e detalhamento diário
+- **Compartilhar** imagem (Web Share API), **salvar PNG** em alta resolução, **exportar .xlsx** (abre nativamente no Excel)
+- Tema claro/escuro (`next-themes`); aviso ao sair com dados não salvos quando aplicável
+
+### Controle de horas (fluxo clássico na grade)
+
+- Tabela mensal (até 31 dias), totais e persistência no **navegador (localStorage)**
+- Botão para limpar horas registradas
 
 ## Tecnologias
 
-| Camada       | Tecnologia                          |
-| ------------ | ----------------------------------- |
-| Framework    | Next.js 16 (App Router)             |
-| UI           | React 19, Tailwind CSS 4, shadcn v4 |
-| OCR          | Google Gemini Vision API             |
-| Imagem       | html-to-image                        |
-| Fonte        | Montserrat (Google Fonts)            |
-| Deploy       | Vercel                               |
+| Camada    | Tecnologia |
+| --------- | ---------- |
+| Framework | Next.js 16 (App Router), React 19 |
+| UI        | Tailwind CSS 4, shadcn v4, @base-ui/react, Lucide |
+| Estado / tema | Zustand, next-themes |
+| OCR (servidor) | @google/generative-ai; opcional @anthropic-ai/sdk |
+| Planilhas | xlsx (export .xlsx) |
+| Relatório visual | html-to-image (PNG) |
+| Outras   | tesseract.js (caminho alternativo/template no projeto) |
+| Fonte    | Montserrat (Google Fonts) |
+| Deploy   | Vercel (rota OCR com `maxDuration` ampliado para lotes) |
 
 ## Como rodar localmente
 
-### Pre-requisitos
+### Pré-requisitos
 
 - Node.js 18+
-- Chave da API do Google Gemini ([obter aqui](https://aistudio.google.com/apikey))
+- Chave **Gemini** ([Google AI Studio](https://aistudio.google.com/apikey)) — **obrigatória** a menos que use só Anthropic em cenários avançados; o código exige **pelo menos uma** das duas chaves
 
-### Instalacao
+### Instalação
 
 ```bash
 git clone <url-do-repositorio>
@@ -61,52 +67,55 @@ cd conta-ponto
 npm install
 ```
 
-### Configuracao
+### Configuração
 
-Crie um arquivo `.env.local` na raiz do projeto:
+Crie `.env.local` na raiz:
 
+```env
+GEMINI_API_KEY=sua_chave_gemini
+# Opcional — habilita provedor/cadeia Anthropic no servidor
+# ANTHROPIC_API_KEY=sua_chave_anthropic
 ```
-GEMINI_API_KEY=sua_chave_aqui
-```
 
-### Execucao
+### Execução
 
 ```bash
 npm run dev
 ```
 
-Acesse `http://localhost:3000` no navegador (de preferencia no celular ou no modo responsivo do DevTools).
+Acesse `http://localhost:3000` — no fluxo de piso, prefira **celular** ou modo responsivo do DevTools; a home também se adapta a telas largas.
 
 ## Deploy na Vercel
 
-1. Suba o repositorio no GitHub
+1. Suba o repositório no GitHub
 2. Importe o projeto na [Vercel](https://vercel.com)
-3. Em **Settings > Environment Variables**, adicione:
-   - `GEMINI_API_KEY` com o valor da sua chave
-4. Deploy automatico a cada push
+3. Em **Settings > Environment Variables**, defina `GEMINI_API_KEY` e, se for o caso, `ANTHROPIC_API_KEY`
+4. Deploy automático a cada push
 
-A chave da API roda apenas no servidor (API Route) e nunca e exposta ao navegador.
+As chaves rodam **apenas no servidor** (API Route) e não são expostas ao navegador.
 
-## Estrutura do projeto
+## Estrutura do projeto (resumo)
 
 ```
 src/
 ├── app/
-│   ├── api/ocr/         # API Route que chama o Gemini Vision
-│   ├── relatorio/       # Pagina de emissao de relatorio
-│   ├── layout.tsx       # Layout raiz (Montserrat, viewport mobile)
-│   ├── page.tsx         # Pagina principal
-│   └── globals.css      # Paleta de cores Unimax (#f58634, #233a95)
+│   ├── api/ocr/           # Rota POST multipart — OCR em cadeia (Gemini / Anthropic)
+│   ├── relatorio/         # Relatório visual + PNG + xlsx
+│   ├── layout.tsx, page.tsx, globals.css, manifest.ts
 ├── components/
-│   ├── camera/          # Captura de foto e upload de imagens
-│   ├── report/          # Relatorio oficial de horas
-│   ├── timecard/        # Tabela de horas e workspace principal
-│   └── ui/              # Componentes base (shadcn)
+│   ├── camera/            # Captura, galeria, pré-visualização de pares
+│   ├── history/           # Painel de histórico de CSV
+│   ├── report/            # hours-report (PNG + xlsx)
+│   ├── timecard/          # Grade, workspace, importação em lote
+│   ├── providers/         # Tema
+│   └── ui/                # shadcn / base
+├── hooks/                 # Ex.: aviso beforeunload
 ├── lib/
-│   ├── gemini-ocr-client.ts   # Cliente que envia imagens para /api/ocr
-│   ├── ocr-timecard-parser.ts # Parser de palavras OCR para horarios
-│   ├── time-utils.ts          # Calculos de horas (HH:MM, diferencas)
-│   └── timecard-defaults.ts   # Chave do LocalStorage e dados padrao
+│   ├── ocr-providers/     # gemini, anthropic, chain, types
+│   ├── gemini-ocr-client.ts, ocr-timecard-parser.ts, timecard-template-ocr.ts
+│   ├── hr-batch-report.ts, hr-report-xlsx.ts
+│   ├── csv-history-storage.ts, camera-draft-idb.ts, reading-period-map.ts
+│   ├── time-utils.ts, timecard-defaults.ts, utils.ts
 └── types/
-    └── timecard.ts      # Tipos (TimecardRow, WorkedTimeSummary)
+    └── timecard.ts
 ```

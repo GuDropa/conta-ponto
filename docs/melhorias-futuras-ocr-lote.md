@@ -1,6 +1,8 @@
-# Melhorias futuras — OCR em lote (Gemini)
+# Melhorias futuras — OCR em lote (Gemini / cadeia)
 
-Notas guardadas para evolução do backend e da robustez do processamento. **Não implementadas** no momento; o front usa contador estimado no lote (ver `camera-capture.tsx`).
+Notas para evolução do backend e da robustez do processamento. **Nem tudo** abaixo está “pendente” de feature — parte documenta o estado atual. O front mostra **progresso informativo** no lote (fases e estimativa; ver `camera-capture.tsx`), não streaming por par.
+
+**Hoje (resumo):** rota `POST /api/ocr` usa **`runVisionOcrChain`** (Gemini com fallback de modelos; em seguida **Anthropic** se `ANTHROPIC_API_KEY` existir e o erro permitir pular de provedor). A **exportação principal** do RH no browser é **`.xlsx`**, não CSV.
 
 ## 1. `Promise.all` vs `Promise.allSettled`
 
@@ -15,7 +17,7 @@ Notas guardadas para evolução do backend e da robustez do processamento. **Nã
 
 ## 2. Controle de concorrência (throttling)
 
-**Contexto:** Hoje todas as chamadas ao Gemini para os pares do lote são disparadas em paralelo (uma instância `GoogleGenerativeAI` por par). Em lotes grandes isso pode gerar picos de requisições e aumentar a chance de 429 / stress na API.
+**Contexto:** Hoje as chamadas de **visão** por par do lote são disparadas em paralelo no executor do par (cada par usa a cadeia de provedores). Em lotes grandes isso ainda pode gerar picos de requisições e aumentar a chance de 429 / stress na API.
 
 **Sugestão:** Limitar concorrência (ex.: 10 pares ao mesmo tempo) com algo como `p-limit` no Node:
 
@@ -51,4 +53,4 @@ Isso é independente das melhorias 1 e 2 acima.
 
 ## 4. Comentário em `gemini-ocr-client.ts`
 
-O JSDoc de `recognizeTimecardBatchWithGemini` menciona `Promise.all` no servidor — continua válido para as chamadas ao Gemini; se o backend mudar para `allSettled` + limite, vale alinhar o texto.
+O nome `recognizeTimecardBatchWithGemini` e comentários próximos podem lembrar só **Gemini**; o **servidor** hoje orquestra **cadeia** (Gemini + optional Anthropic). Se renomear ou documentar, alinhar texto/JSDoc para “batch OCR / HR report”, não “só Gemini”.
